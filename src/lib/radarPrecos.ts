@@ -7,7 +7,7 @@
 // código que vai recusar ou aprovar os anúncios depois.
 export * from "../../supabase/functions/_shared/radar-precos";
 
-import type { AlvoSpecs } from "../../supabase/functions/_shared/radar-precos";
+import { norm, type AlvoSpecs } from "../../supabase/functions/_shared/radar-precos";
 
 /** Resumo em uma linha do que o radar entendeu do pedido — para a prévia e para o card. */
 export function resumoDoAlvo(s: AlvoSpecs | null | undefined): string {
@@ -46,4 +46,33 @@ export function textoFrete(frete: number | null | undefined, texto?: string | nu
   // leitura de página. Dizer isso é melhor que deixar o campo em branco, que a
   // pessoa leria como "sem frete".
   return texto ? `frete: ${texto.toLowerCase()}` : "frete não informado";
+}
+
+/** Linha de `facilities_radar_iguais`. */
+export interface JuntadoRow { id: number; alvo_id: string; titulo: string; grupo: string }
+
+/**
+ * O que gravar para juntar `titulos` num produto só. Se algum já está num
+ * grupo, os outros entram nele; se estão em grupos DIFERENTES, os grupos se
+ * fundem (as linhas dos outros grupos mudam para o escolhido). Devolve as
+ * linhas para um upsert em (alvo_id, titulo).
+ */
+export function planoDeJuntar(
+  alvoId: string,
+  titulos: string[],
+  existentes: JuntadoRow[],
+  novoGrupo: string,
+): { alvo_id: string; titulo: string; grupo: string }[] {
+  const doAlvo = existentes.filter((l) => l.alvo_id === alvoId);
+  const chaves = new Set(titulos.map(norm));
+  const tocados = new Set(doAlvo.filter((l) => chaves.has(norm(l.titulo))).map((l) => l.grupo));
+  const grupo = doAlvo.find((l) => tocados.has(l.grupo))?.grupo ?? novoGrupo;
+  const saida = new Map<string, { alvo_id: string; titulo: string; grupo: string }>();
+  // Quem já estava num dos grupos tocados vem junto, com o título que já tinha.
+  for (const l of doAlvo) if (tocados.has(l.grupo)) saida.set(l.titulo, { alvo_id: alvoId, titulo: l.titulo, grupo });
+  for (const t of titulos) {
+    const jaTem = [...saida.keys()].some((k) => norm(k) === norm(t));
+    if (!jaTem) saida.set(t, { alvo_id: alvoId, titulo: t, grupo });
+  }
+  return [...saida.values()];
 }

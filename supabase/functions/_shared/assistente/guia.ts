@@ -854,6 +854,9 @@ export const GUIA: readonly Verbete[] = [
       "Salve com 'Criar e esperar o horário' ou, se precisa do preço agora, 'Criar e buscar agora' (leva uns dois minutos).",
       "Achado bom aparece no bloco 'Achados', no topo da tela: 'Virar cotação' leva o achado para uma solicitação; 'Dispensar' tira da mesa (e o aviso tem 'Desfazer').",
       "Abra o card do alvo pela seta para ver o mercado: a curva de preço com a linha do teto, a tabela de anúncios (abre só com o que cabe no teto; 'ver também os acima do teto' mostra o resto), 👍/👎 para ensinar sua preferência e 'adotar' para acompanhar um modelo específico.",
+      "Clique na foto do anúncio para ampliá-la e fazer a triagem pela imagem: D descarta, L marca que levaria, as setas passam para o próximo.",
+      "O 👎 tira o anúncio (e as cópias dele noutras lojas) da tabela, do 'Melhor agora' do card e dos avisos; 'rever os descartados' traz de volta, e clicar de novo no 👎 desfaz. Nos Achados, 'Dispensar' só tira aquele aviso — o 👎 recusa o produto.",
+      "O mesmo produto vindo de várias lojas aparece numa linha só, com a mais barata na frente; '+2 lojas' mostra as outras. Se ele ainda estiver em linhas separadas (título cortado diferente), marque as caixas à esquerda e clique 'Juntar como o mesmo produto', ou use 'Sugerir junções' para o Hub apontar os pares — nada é juntado sem o seu clique em 'Juntar'. 'separar', na linha de dentro do grupo, desfaz.",
       "Quem recebe o aviso no WhatsApp se cadastra no fim da tela, em 'Quem recebe o aviso no WhatsApp' (nome e telefone com DDD).",
       "Alvo trazendo coisa errada? Abra o card e use 'Melhorar a busca': o Hub lê o que foi recusado e propõe outro termo, que só vale depois de 'Aplicar'.",
       "Comprou? No card, 'Voltar a vigiar'. Se esquecer, o alvo volta à vigia sozinho 14 dias depois de 'Estou comprando'.",
@@ -879,7 +882,7 @@ export const GUIA: readonly Verbete[] = [
       "Café, copa e limpeza não entram na vigia permanente — a Takeat já tem fornecedor fechado. Para comparar uma vez, deixe em compra e use 'Criar e buscar agora'.",
       "Com uma solicitação vinculada, o achado vira cotação nela num clique; sem vínculo, o Hub pergunta antes de criar a solicitação.",
     ],
-    termos: ["radar de compras", "radar de preços", "radar de preço", "monitorar preço", "promoção", "notebook", "mercado livre", "baixou de preço", "oferta", "alvo", "novo alvo", "cadastrar alvo", "buscar preço", "vigia", "quanto custa"],
+    termos: ["radar de compras", "radar de preços", "radar de preço", "monitorar preço", "promoção", "notebook", "mercado livre", "baixou de preço", "oferta", "alvo", "novo alvo", "cadastrar alvo", "buscar preço", "vigia", "quanto custa", "juntar anúncios", "mesmo produto", "anúncio repetido"],
   },
   {
     rota: "/facilities/radar/passagens",

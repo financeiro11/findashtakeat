@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import {
-  AlertTriangle, ArrowDownRight, ChevronDown, ChevronRight, Copy, Eye, ExternalLink,
+  AlertTriangle, ArrowDownRight, ChevronDown, ChevronLeft, ChevronRight, Copy, Eye, ExternalLink,
   Loader2, PackageCheck, PackageX, Pause, PiggyBank, Play, Plus, Radar as RadarIcon, RefreshCw, ShoppingCart,
   Sparkles, Star, ThumbsDown, ThumbsUp, Trash2, TrendingDown, Wand2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -17,7 +19,7 @@ import { comValorExato } from "@/components/ValorExato";
 import { CatDot } from "./components";
 import { NovoAlvoDialog, type AlvoRow } from "./NovoAlvoDialog";
 import { db, fmtBRL as fmtBRLStr, fmtData } from "./lib";
-import { resumoDoAlvo, fonteLabel, textoFrete, textoNota, textoWhats, TIPO_ALERTA_LABEL, type TipoAlerta, type UnidadeBase } from "@/lib/radarPrecos";
+import { agruparIguais, mapaDeJuntados, norm, planoDeJuntar, type JuntadoRow, resumoDoAlvo, fonteLabel, textoFrete, textoNota, textoWhats, TIPO_ALERTA_LABEL, type TipoAlerta, type UnidadeBase } from "@/lib/radarPrecos";
 import { invalidarRadarAlertas } from "@/hooks/useRadarAlertas";
 import { ProximaVarredura } from "./ProximaVarredura";
 import { SaldoRaspagem } from "./SaldoRaspagem";
@@ -26,6 +28,13 @@ import { Kits } from "./Kits";
 import { UltimaRodada } from "./UltimaRodada";
 import { lerFontes } from "@/lib/radarRodada";
 import { Destinatarios } from "./Destinatarios";
+
+/** O que `sugerir_iguais` devolve — a IA propõe a junção, a trava filtra, a pessoa carimba. */
+interface SugestaoIguais {
+  ok?: boolean; erro?: string; pode?: boolean; texto?: string;
+  linhas?: number; barradas?: number;
+  sugestoes?: { porque: string; ofertas: { id: number; titulo: string; vendedor: string | null; fonte: string; preco: number; preco_total: number | null; imagem_url: string | null }[] }[];
+}
 
 /** O que `sugerir_busca` devolve — a IA propõe, a pessoa carimba. */
 interface SugestaoBusca {
@@ -110,10 +119,30 @@ export default function Radar() {
   const [dialogAberto, setDialogAberto] = useState(false);
   /** alvo_id → oferta_id → o que a pessoa já votou. Só do alvo aberto por vez. */
   const [feedback, setFeedback] = useState<Record<string, Record<number, "gostei" | "nao_gostei">>>({});
+  const feedbackRef = useRef(feedback);
+  feedbackRef.current = feedback;
+  /* O anúncio com 👎 some da tabela; este interruptor o traz de volta (esmaecido)
+     para quem quer rever ou desfazer uma recusa. */
+  const [verDescartados, setVerDescartados] = useState(false);
   /* A tabela do card abre mostrando o que CABE no teto — o mesmo que o contador
      do card conta. O resto (produto certo, preço errado) fica a um clique. */
   const [soNoTeto, setSoNoTeto] = useState(true);
   const [sugestoes, setSugestoes] = useState<Record<string, { carregando: boolean; dados?: SugestaoBusca }>>({});
+  /* Foto ampliada da tabela de anúncios. Guarda a lista VISÍVEL de quando abriu,
+     para dar para triar anúncio a anúncio (←/→) só pela foto. */
+  const [foto, setFoto] = useState<{ alvoId: string; lista: Oferta[]; idx: number } | null>(null);
+  /* Grupos de anúncios iguais abertos, pelo id da cabeça (a mais barata). */
+  const [gruposAbertos, setGruposAbertos] = useState<Set<number>>(new Set());
+  /* Anúncios que a pessoa juntou como o mesmo produto (`facilities_radar_iguais`),
+     por alvo — é o que supera o título cortado diferente em cada comparador. */
+  const [juntados, setJuntados] = useState<Record<string, JuntadoRow[]>>({});
+  /* Linhas marcadas para juntar. Só vale no card aberto: trocar de card limpa. */
+  const [selecao, setSelecao] = useState<Set<number>>(new Set());
+  const [juntando, setJuntando] = useState(false);
+  /* Junções que a IA PROPÕE, por alvo. Nada é gravado até o clique em "Juntar";
+     "Ignorar" só tira da lista (a próxima sugestão pode trazer de novo). */
+  const [sugestoesIguais, setSugestoesIguais] = useState<Record<string, { carregando: boolean; dados?: SugestaoIguais }>>({});
+  useEffect(() => { setSelecao(new Set()); }, [aberto]);
 
   /* Quantos alvos em cada regime. Sai daqui e não de dentro dos componentes
      porque três lugares fazem a mesma pergunta e por motivos diferentes: o
@@ -175,7 +204,7 @@ export default function Radar() {
   }, [aberto, ofertas]);
 
   async function carregarOfertas(id: string) {
-    const [{ data }, { data: votos }] = await Promise.all([
+    const [{ data }, { data: votos }, { data: iguais }] = await Promise.all([
       db.from("facilities_radar_ofertas")
         .select("*").eq("alvo_id", id).eq("ativo", true)
         /* Esgotado apurado não entra na lista. `not.is.false` e não `neq`: o
@@ -185,7 +214,9 @@ export default function Radar() {
         // Pelo TOTAL: o mais barato de verdade, não o de etiqueta menor.
         .order("preco_total", { ascending: true }).limit(60),
       db.from("facilities_radar_feedback").select("oferta_id, sinal").eq("alvo_id", id),
+      db.from("facilities_radar_iguais").select("id, alvo_id, titulo, grupo").eq("alvo_id", id),
     ]);
+    setJuntados((p) => ({ ...p, [id]: (iguais as JuntadoRow[]) ?? [] }));
     setOfertas((p) => ({ ...p, [id]: (data as Oferta[]) ?? [] }));
     setFeedback((p) => ({
       ...p,
@@ -194,9 +225,64 @@ export default function Radar() {
   }
 
   /**
-   * 👍/👎 num anúncio — sem formulário, sem confirmação, e SEM EFEITO na tela
-   * agora: só alimenta a próxima varredura (bônus de ranking em 👍, proposta de
-   * regra depois de 👎 repetido). Reclicar no ícone já ativo desfaz o voto.
+   * "Estes são o mesmo produto." Grava por TÍTULO, então vale nas próximas
+   * varreduras sem repetir o clique. Linha marcada que já é cabeça de um grupo
+   * leva o grupo junto (`planoDeJuntar` funde os grupos).
+   */
+  async function juntar(alvoId: string, marcados: Oferta[]): Promise<boolean> {
+    const titulos = [...new Set(marcados.map((o) => o.titulo))];
+    const linhas = planoDeJuntar(alvoId, titulos, juntados[alvoId] ?? [], crypto.randomUUID())
+      .map((l) => ({ ...l, criado_por: profile?.nome ?? null }));
+    setJuntando(true);
+    const { error } = await db.from("facilities_radar_iguais").upsert(linhas, { onConflict: "alvo_id,titulo" });
+    setJuntando(false);
+    if (error) { toast.error(`Não deu para juntar: ${error.message}`); return false; }
+    toast.success(`${marcados.length} anúncios juntados como o mesmo produto — vale também nas próximas varreduras.`);
+    setSelecao(new Set());
+    await carregarOfertas(alvoId);
+    return true;
+  }
+
+  async function sugerirIguais(alvoId: string) {
+    setSugestoesIguais((p) => ({ ...p, [alvoId]: { carregando: true } }));
+    try {
+      const r = await invocar<SugestaoIguais>(supabase.functions.invoke("facilities-radar", {
+        body: { action: "sugerir_iguais", alvo_id: alvoId },
+      }));
+      if (r?.ok === false) throw new Error(r.erro ?? "a sugestão falhou");
+      setSugestoesIguais((p) => ({ ...p, [alvoId]: { carregando: false, dados: r } }));
+    } catch (e: any) {
+      toast.error(`Não deu para sugerir junções: ${e.message ?? e}`);
+      setSugestoesIguais((p) => { const n = { ...p }; delete n[alvoId]; return n; });
+    }
+  }
+
+  /** Tira uma sugestão da lista — depois de juntar ou de ignorar. */
+  function tirarSugestao(alvoId: string, idx: number) {
+    setSugestoesIguais((p) => {
+      const atual = p[alvoId]?.dados;
+      if (!atual?.sugestoes) return p;
+      return { ...p, [alvoId]: { carregando: false, dados: { ...atual, sugestoes: atual.sugestoes.filter((_, i) => i !== idx) } } };
+    });
+  }
+
+  /** Desfaz a junção de UM título (e das cópias de título igual a ele). */
+  async function separar(alvoId: string, o: Oferta) {
+    const ids = (juntados[alvoId] ?? []).filter((l) => norm(l.titulo) === norm(o.titulo)).map((l) => l.id);
+    if (!ids.length) return;
+    const { error } = await db.from("facilities_radar_iguais").delete().in("id", ids);
+    if (error) { toast.error(`Não deu para separar: ${error.message}`); return; }
+    await carregarOfertas(alvoId);
+  }
+
+  /**
+   * 👍/👎 num anúncio — sem formulário e sem confirmação. Reclicar no ícone já
+   * ativo desfaz o voto.
+   *
+   * 👎 TIRA O PRODUTO DE CENA NA HORA: some da tabela (com as cópias dele
+   * noutras lojas), deixa de ser o "Melhor agora" do card e os achados dele
+   * saem da lista — o servidor faz a parte dele e devolve quais anúncios o voto
+   * alcançou. 👍 só alimenta o ranking da próxima varredura.
    *
    * OTIMISTA, e sem desfazer sozinho no erro: a chance real de falha aqui é de
    * rede, não de regra de negócio, e um segundo clique já resolve — regredir o
@@ -204,17 +290,32 @@ export default function Radar() {
    * seguinte da pessoa.
    */
   async function classificar(alvoId: string, ofertaId: number, sinal: "gostei" | "nao_gostei") {
-    const atual = feedback[alvoId]?.[ofertaId];
+    // Pelo ref: o "Desfazer" do toast chama esta função com a closure de antes do voto.
+    const atual = feedbackRef.current[alvoId]?.[ofertaId];
     const novo = atual === sinal ? null : sinal;
-    setFeedback((p) => {
+    const aplicar = (ids: number[]) => setFeedback((p) => {
       const doAlvo = { ...(p[alvoId] ?? {}) };
-      if (novo) doAlvo[ofertaId] = novo; else delete doAlvo[ofertaId];
-      return { ...p, [alvoId]: doAlvo };
+      for (const id of ids) { if (novo) doAlvo[id] = novo; else delete doAlvo[id]; }
+      feedbackRef.current = { ...p, [alvoId]: doAlvo };
+      return feedbackRef.current;
     });
+    aplicar([ofertaId]);
+    if (novo === "nao_gostei") {
+      setAlertas((p) => p.filter((a) => a.oferta_id !== ofertaId));
+      toast("Anúncio descartado — não aparece mais aqui nem vira aviso.", {
+        duration: 6000,
+        action: { label: "Desfazer", onClick: () => classificar(alvoId, ofertaId, "nao_gostei") },
+      });
+    }
     try {
       const r = await invocar<any>(supabase.functions.invoke("facilities-radar", {
         body: { action: "classificar", oferta_id: ofertaId, sinal: novo },
       }));
+      if (Array.isArray(r?.ofertas)) aplicar(r.ofertas.map(Number));
+      /* O card (melhor preço, contador) e os achados dependem do voto quando
+         ele é ou deixa de ser 👎. A recarga não pisca: o skeleton é só da
+         primeira carga. */
+      if (novo === "nao_gostei" || atual === "nao_gostei") load();
       if (r?.proposta) {
         const { marca, contagem } = r.proposta;
         toast.message(
@@ -928,7 +1029,18 @@ export default function Radar() {
                                   </a>
                                 )}
                                 <Button size="sm" variant="outline" onClick={() => virarCotacao(al)}>Virar cotação</Button>
-                                <Button size="sm" variant="ghost" onClick={() => mudarStatus(al.id, "arquivado")}>Dispensar</Button>
+                                {/* DISPENSAR ≠ RECUSAR. Dispensar tira este aviso e
+                                    deixa o produto avisar de novo se o preço cair;
+                                    o 👎 diz "não compro este" e ele some de vez. */}
+                                <Button size="sm" variant="ghost" onClick={() => mudarStatus(al.id, "arquivado")}
+                                  title="Tira este aviso. O produto volta a avisar se o preço cair mais.">
+                                  Dispensar
+                                </Button>
+                                <Button size="sm" variant="ghost" className="ghost-icone text-muted-foreground"
+                                  onClick={() => classificar(al.alvo_id, al.oferta_id, "nao_gostei")}
+                                  title="Não compro este produto — some daqui, da tabela e dos avisos">
+                                  <ThumbsDown className="h-3.5 w-3.5" />
+                                </Button>
                               </div>
                             </div>
                           </div>
@@ -991,11 +1103,22 @@ export default function Radar() {
                 const folga = melhorTotal != null ? (Number(l.alvo.preco_alvo) - melhorTotal) / Number(l.alvo.preco_alvo) : null;
                 /* O filtro "só no teto" só vale quando há algo no teto: com zero,
                    esconder tudo daria uma tabela vazia com cara de radar quebrado. */
-                const listaDoAlvo = ofertas[l.alvo.id];
+                /* O RECUSADO SAI ANTES DE TUDO — das contagens também, senão o
+                   "22 no teto" continuaria contando o que a pessoa já descartou. */
+                const votosDoAlvo = feedback[l.alvo.id] ?? {};
+                const todasDoAlvo = ofertas[l.alvo.id];
+                const descartados = todasDoAlvo?.filter((o) => votosDoAlvo[o.id] === "nao_gostei").length ?? 0;
+                const listaDoAlvo = verDescartados
+                  ? todasDoAlvo
+                  : todasDoAlvo?.filter((o) => votosDoAlvo[o.id] !== "nao_gostei");
                 const acimaDoTeto = listaDoAlvo?.filter((o) => o.dentro_do_teto === false).length ?? 0;
                 const cabemNoTeto = (listaDoAlvo?.length ?? 0) - acimaDoTeto;
                 const filtrando = soNoTeto && cabemNoTeto > 0;
                 const visiveis = listaDoAlvo?.filter((o) => !filtrando || o.dentro_do_teto !== false) ?? [];
+                const mapaJuntados = mapaDeJuntados(juntados[l.alvo.id]);
+                const grupos = agruparIguais(visiveis, mapaJuntados);
+                const marcados = grupos.filter((g) => selecao.has(g[0].id)).map((g) => g[0]);
+                const sugIguais = sugestoesIguais[l.alvo.id];
                 const sugestao = sugestoes[l.alvo.id];
                 const buscaAtual = ((l.alvo.specs as any)?.buscas?.[0] as string | undefined) ?? l.alvo.titulo;
                 return (
@@ -1211,6 +1334,14 @@ export default function Radar() {
                         </div>
                         {!listaDoAlvo ? (
                           <div className="p-4"><Skeleton className="h-24 rounded" /></div>
+                        ) : listaDoAlvo.length === 0 && descartados > 0 ? (
+                          <div className="p-6 text-center text-[12.5px] text-muted-foreground">
+                            Você descartou {descartados === 1 ? "o único anúncio" : `todos os ${descartados} anúncios`} desta lista.
+                            A próxima varredura traz o que aparecer de novo.{" "}
+                            <button type="button" className="text-primary hover:underline" onClick={() => setVerDescartados(true)}>
+                              rever os descartados
+                            </button>
+                          </div>
                         ) : listaDoAlvo.length === 0 ? (
                           <div className="p-6 text-center text-[12.5px] text-muted-foreground">
                             Nenhum anúncio passou nos filtros na última varredura. Se isso persistir, o pedido pode estar exigindo demais —
@@ -1218,16 +1349,129 @@ export default function Radar() {
                           </div>
                         ) : (
                           <>
-                          {acimaDoTeto > 0 && (
+                          {(acimaDoTeto > 0 || descartados > 0) && (
                             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-1.5 text-[11.5px] text-muted-foreground">
                               <span>
-                                {cabemNoTeto} no teto · {acimaDoTeto} acima do teto
-                                {filtrando && " (ocultos)"}
+                                {acimaDoTeto > 0 && <>{cabemNoTeto} no teto · {acimaDoTeto} acima do teto{filtrando && " (ocultos)"}</>}
+                                {acimaDoTeto > 0 && descartados > 0 && " · "}
+                                {descartados > 0 && <>{descartados} descartado{descartados > 1 ? "s" : ""}{!verDescartados && " (ocultos)"}</>}
                               </span>
-                              {cabemNoTeto > 0 && (
-                                <button type="button" className="text-primary hover:underline" onClick={() => setSoNoTeto((v) => !v)}>
-                                  {soNoTeto ? `ver também os ${acimaDoTeto} acima do teto` : "mostrar só o que cabe no teto"}
-                                </button>
+                              <span className="flex flex-wrap items-center gap-3">
+                                {descartados > 0 && (
+                                  <button type="button" className="text-primary hover:underline" onClick={() => setVerDescartados((v) => !v)}>
+                                    {verDescartados ? "esconder os descartados" : "rever os descartados"}
+                                  </button>
+                                )}
+                                {acimaDoTeto > 0 && cabemNoTeto > 0 && (
+                                  <button type="button" className="text-primary hover:underline" onClick={() => setSoNoTeto((v) => !v)}>
+                                    {soNoTeto ? `ver também os ${acimaDoTeto} acima do teto` : "mostrar só o que cabe no teto"}
+                                  </button>
+                                )}
+                              </span>
+                            </div>
+                          )}
+                          {/* JUNTAR À MÃO: cada comparador corta o título num ponto
+                              diferente, e a regra não se arrisca a adivinhar. */}
+                          {grupos.length > 1 && (
+                            <div className={cn("flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-1.5 text-[11.5px]", marcados.length > 0 && "bg-primary/5")}>
+                              <span className="text-muted-foreground">
+                                {marcados.length === 0
+                                  ? "Mesmo produto em linhas separadas? Marque e junte."
+                                  : marcados.length === 1
+                                    ? "Marque outro anúncio do mesmo produto para juntar."
+                                    : `${marcados.length} anúncios marcados`}
+                              </span>
+                              <span className="flex items-center gap-2">
+                                <Button
+                                  size="sm" variant="ghost" className="h-6 px-2 text-[11px]"
+                                  disabled={sugIguais?.carregando}
+                                  onClick={() => sugerirIguais(l.alvo.id)}
+                                  title="A IA lê os títulos e aponta os que parecem o mesmo produto. Nada é juntado até você confirmar."
+                                >
+                                  {sugIguais?.carregando
+                                    ? <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                    : <Wand2 className="mr-1 h-3 w-3" />}
+                                  Sugerir junções
+                                </Button>
+                                {marcados.length > 0 && (
+                                  <>
+                                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => setSelecao(new Set())}>
+                                      Limpar
+                                    </Button>
+                                    <Button
+                                      size="sm" className="h-6 px-2 text-[11px]"
+                                      disabled={marcados.length < 2 || juntando}
+                                      onClick={() => juntar(l.alvo.id, marcados)}
+                                      title="Passam a aparecer numa linha só, com a mais barata na frente — também nas próximas varreduras. O 👎 num deles vale para todos."
+                                    >
+                                      {juntando && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+                                      Juntar como o mesmo produto
+                                    </Button>
+                                  </>
+                                )}
+                              </span>
+                            </div>
+                          )}
+                          {/* A IA PROPÕE, A PESSOA CARIMBA. Cada sugestão já passou
+                              pela trava (títulos que se contradizem não chegam aqui). */}
+                          {sugIguais?.dados && (
+                            <div className="space-y-1.5 border-b border-border bg-muted/30 px-4 py-2 text-[11.5px]">
+                              {!sugIguais.dados.pode ? (
+                                <span className="text-muted-foreground">{sugIguais.dados.texto}</span>
+                              ) : !sugIguais.dados.sugestoes?.length ? (
+                                <div className="flex items-center justify-between gap-2 text-muted-foreground">
+                                  <span>
+                                    Nenhuma junção a sugerir entre as {sugIguais.dados.linhas} linhas.
+                                    {!!sugIguais.dados.barradas && ` (${sugIguais.dados.barradas} proposta${sugIguais.dados.barradas > 1 ? "s" : ""} da IA barrada${sugIguais.dados.barradas > 1 ? "s" : ""} porque os títulos se contradiziam.)`}
+                                  </span>
+                                  <button type="button" className="text-primary hover:underline"
+                                    onClick={() => setSugestoesIguais((p) => { const n = { ...p }; delete n[l.alvo.id]; return n; })}>
+                                    fechar
+                                  </button>
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="text-muted-foreground">
+                                    Parecem o mesmo produto — confira antes de juntar:
+                                    {!!sugIguais.dados.barradas && ` (${sugIguais.dados.barradas} outra${sugIguais.dados.barradas > 1 ? "s" : ""} barrada${sugIguais.dados.barradas > 1 ? "s" : ""} pela trava)`}
+                                  </div>
+                                  {sugIguais.dados.sugestoes.map((sg, k) => (
+                                    <div key={sg.ofertas.map((o) => o.id).join("-")} className="flex flex-wrap items-start justify-between gap-2 rounded-md border border-border bg-background px-3 py-2">
+                                      <div className="min-w-0 flex-1 space-y-0.5">
+                                        {sg.ofertas.map((o) => (
+                                          <div key={o.id} className="flex items-center gap-2">
+                                            {o.imagem_url && (
+                                              <img src={o.imagem_url} alt="" loading="lazy"
+                                                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                                className="h-6 w-6 shrink-0 rounded border border-border bg-white object-contain" />
+                                            )}
+                                            <span className="truncate text-foreground" title={o.titulo}>{o.titulo}</span>
+                                            <span className="shrink-0 text-muted-foreground">
+                                              · {o.vendedor ?? fonteLabel(o.fonte)} · <span className="num">{fmtBRLStr(Number(o.preco_total ?? o.preco))}</span>
+                                            </span>
+                                          </div>
+                                        ))}
+                                        {sg.porque && <div className="text-muted-foreground">{sg.porque}</div>}
+                                      </div>
+                                      <div className="flex shrink-0 gap-1">
+                                        <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => tirarSugestao(l.alvo.id, k)}>
+                                          Ignorar
+                                        </Button>
+                                        <Button
+                                          size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                                          disabled={juntando}
+                                          onClick={async () => {
+                                            const ofs = (todasDoAlvo ?? []).filter((o) => sg.ofertas.some((x) => x.id === o.id));
+                                            if (ofs.length < 2) { toast.error("Algum desses anúncios saiu da lista — peça a sugestão de novo."); return; }
+                                            if (await juntar(l.alvo.id, ofs)) tirarSugestao(l.alvo.id, k);
+                                          }}
+                                        >
+                                          Juntar
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </>
                               )}
                             </div>
                           )}
@@ -1235,6 +1479,7 @@ export default function Radar() {
                             <table className="w-full border-collapse">
                               <thead className="sticky top-0 z-10 bg-muted">
                                 <tr className="text-left text-[10.5px] uppercase tracking-wide text-muted-foreground">
+                                  <th className="w-8 py-2 pl-4 pr-0" title="Marque anúncios do mesmo produto para juntá-los" />
                                   <th className="px-4 py-2 font-semibold">Anúncio</th>
                                   <th className="px-3 py-2 font-semibold">Onde</th>
                                   <th className="px-3 py-2 font-semibold">Frete</th>
@@ -1244,18 +1489,57 @@ export default function Radar() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {visiveis.map((o) => (
-                                  <tr key={o.id} className="border-t border-border/60">
+                                {/* O MESMO PRODUTO por três comparadores vira UMA linha:
+                                    a mais barata, com as outras lojas a um clique. */}
+                                {grupos.flatMap((g) => {
+                                  const grupoAberto = gruposAbertos.has(g[0].id);
+                                  return (grupoAberto ? g : g.slice(0, 1)).map((o, i) => (
+                                  <tr key={o.id} className={cn("border-t border-border/60", i > 0 && "border-border/30 bg-muted/30", votosDoAlvo[o.id] === "nao_gostei" && "opacity-50")}>
+                                    <td className="w-8 py-2 pl-4 pr-0 align-top">
+                                      {i === 0 ? (
+                                        <Checkbox
+                                          className="mt-3"
+                                          checked={selecao.has(o.id)}
+                                          aria-label="Marcar para juntar"
+                                          title="Marcar para juntar com outro anúncio do mesmo produto"
+                                          onCheckedChange={(v) => setSelecao((p) => {
+                                            const n = new Set(p);
+                                            if (v) n.add(o.id); else n.delete(o.id);
+                                            return n;
+                                          })}
+                                        />
+                                      ) : mapaJuntados.has(norm(o.titulo)) && (
+                                        <button
+                                          type="button"
+                                          className="mt-2.5 text-[10.5px] text-muted-foreground hover:text-foreground hover:underline"
+                                          title="Não é o mesmo produto — volta a ter linha própria"
+                                          onClick={() => separar(l.alvo.id, o)}
+                                        >
+                                          separar
+                                        </button>
+                                      )}
+                                    </td>
                                     <td className="px-4 py-2">
                                       <div className="flex items-start gap-2">
                                         {o.imagem_url && (
-                                          <img
-                                            src={o.imagem_url}
-                                            alt=""
-                                            loading="lazy"
-                                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-                                            className="h-10 w-10 shrink-0 rounded border border-border bg-white object-contain p-0.5"
-                                          />
+                                          <button
+                                            type="button"
+                                            className="shrink-0 cursor-zoom-in rounded"
+                                            title="Ampliar a foto"
+                                            onClick={() => setFoto({
+                                              alvoId: l.alvo.id,
+                                              lista: visiveis.filter((x) => x.imagem_url),
+                                              idx: visiveis.filter((x) => x.imagem_url).findIndex((x) => x.id === o.id),
+                                            })}
+                                          >
+                                            <img
+                                              src={o.imagem_url}
+                                              alt=""
+                                              loading="lazy"
+                                              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                              className="h-10 w-10 rounded border border-border bg-white object-contain p-0.5 transition-shadow hover:ring-2 hover:ring-primary/40"
+                                            />
+                                          </button>
                                         )}
                                         <div className="min-w-0">
                                           <div className="max-w-[380px] truncate text-[12.5px] text-foreground" title={o.titulo}>{o.titulo}</div>
@@ -1277,6 +1561,21 @@ export default function Radar() {
                                       {o.vendedor ?? fonteLabel(o.fonte)}
                                       {o.vendedor && o.vendedor !== fonteLabel(o.fonte) && (
                                         <div className="text-[10.5px]">via {fonteLabel(o.fonte)}</div>
+                                      )}
+                                      {i === 0 && g.length > 1 && (
+                                        <button
+                                          type="button"
+                                          className="mt-0.5 inline-flex items-center gap-0.5 text-[10.5px] text-primary hover:underline"
+                                          title={g.slice(1).map((x) => `${x.vendedor ?? fonteLabel(x.fonte)} · ${fmtBRLStr(Number(x.preco_total ?? x.preco))}`).join("\n")}
+                                          onClick={() => setGruposAbertos((p) => {
+                                            const n = new Set(p);
+                                            if (n.has(o.id)) n.delete(o.id); else n.add(o.id);
+                                            return n;
+                                          })}
+                                        >
+                                          {grupoAberto ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                                          {grupoAberto ? "recolher" : `+${g.length - 1} ${g.length === 2 ? "loja" : "lojas"}`}
+                                        </button>
                                       )}
                                     </td>
                                     <td className="px-3 py-2 text-[11.5px] text-muted-foreground">
@@ -1356,7 +1655,8 @@ export default function Radar() {
                                       </div>
                                     </td>
                                   </tr>
-                                ))}
+                                  ));
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -1381,6 +1681,127 @@ export default function Radar() {
         onSaved={() => { setOfertas({}); load(); }}
         onBuscarAgora={varrer}
       />
+
+      <FotoAmpliada
+        estado={foto}
+        voto={foto ? feedback[foto.alvoId]?.[foto.lista[foto.idx]?.id] : undefined}
+        onIr={(idx) => setFoto((f) => (f ? { ...f, idx } : f))}
+        onFechar={() => setFoto(null)}
+        onVotar={(sinal) => {
+          if (!foto) return;
+          const o = foto.lista[foto.idx];
+          const jaTinha = feedback[foto.alvoId]?.[o.id] === sinal;
+          classificar(foto.alvoId, o.id, sinal);
+          // Votou (e não desfez)? Segue para o próximo — a triagem é o ponto.
+          if (!jaTinha) {
+            if (foto.idx < foto.lista.length - 1) setFoto({ ...foto, idx: foto.idx + 1 });
+            else setFoto(null);
+          }
+        }}
+      />
     </div>
+  );
+}
+
+/** Foto do anúncio em tamanho de ver o produto, com o mesmo 👍/👎 da linha.
+ *  ←/→ passam de anúncio; votar já avança para o próximo. */
+function FotoAmpliada({ estado, voto, onIr, onFechar, onVotar }: {
+  estado: { alvoId: string; lista: Oferta[]; idx: number } | null;
+  voto: "gostei" | "nao_gostei" | undefined;
+  onIr: (idx: number) => void;
+  onFechar: () => void;
+  onVotar: (sinal: "gostei" | "nao_gostei") => void;
+}) {
+  const o = estado?.lista[estado.idx];
+  const total = estado?.lista.length ?? 0;
+  const idx = estado?.idx ?? 0;
+
+  useEffect(() => {
+    if (!estado) return;
+    /* A TRIAGEM PELO TECLADO: D descarta, L levaria, as setas passam. Uma mão
+       no teclado dá conta de uma lista de quarenta fotos. */
+    const tecla = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      const k = e.key.toLowerCase();
+      if (k === "arrowright" && idx < total - 1) onIr(idx + 1);
+      else if (k === "arrowleft" && idx > 0) onIr(idx - 1);
+      else if (k === "d") onVotar("nao_gostei");
+      else if (k === "l") onVotar("gostei");
+    };
+    window.addEventListener("keydown", tecla);
+    return () => window.removeEventListener("keydown", tecla);
+  }, [estado, idx, total, onIr, onVotar]);
+
+  return (
+    <Dialog open={!!o} onOpenChange={(v) => { if (!v) onFechar(); }}>
+      <DialogContent className="max-w-2xl">
+        {o && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="pr-6 text-[14px] font-medium leading-snug">{o.titulo}</DialogTitle>
+              <DialogDescription className="text-[12px]">
+                {o.vendedor ?? fonteLabel(o.fonte)} · <span className="num">{fmtBRLStr(Number(o.preco_total ?? o.preco))}</span>
+                {total > 1 && <> · {idx + 1} de {total}</>}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="relative flex items-center justify-center rounded-md border border-border bg-white p-2">
+              <img
+                key={o.id}
+                src={o.imagem_url ?? ""}
+                alt={o.titulo}
+                className="max-h-[60vh] w-auto object-contain"
+              />
+              {idx > 0 && (
+                <Button
+                  size="icon" variant="secondary"
+                  className="absolute left-2 top-1/2 h-8 w-8 -translate-y-1/2 rounded-full shadow"
+                  onClick={() => onIr(idx - 1)} title="Anterior (←)"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+              )}
+              {idx < total - 1 && (
+                <Button
+                  size="icon" variant="secondary"
+                  className="absolute right-2 top-1/2 h-8 w-8 -translate-y-1/2 rounded-full shadow"
+                  onClick={() => onIr(idx + 1)} title="Próximo (→)"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <a href={o.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12px] text-primary hover:underline">
+                abrir anúncio <ExternalLink className="h-3 w-3" />
+              </a>
+              <div className="flex gap-2">
+                <Button
+                  size="sm" variant="outline"
+                  className={cn(voto === "nao_gostei" && "border-destructive/50 bg-red-50 dark:bg-red-950/40")}
+                  onClick={() => onVotar("nao_gostei")}
+                  title={voto === "nao_gostei" ? "Você recusou — clique para desfazer" : "Eu não levaria em conta"}
+                >
+                  <ThumbsDown className={cn("mr-1.5 h-3.5 w-3.5", voto === "nao_gostei" && "text-destructive")} />
+                  {voto === "nao_gostei" ? "Descartado" : "Descartar"}
+                  <kbd className="ml-1.5 rounded border border-border px-1 text-[10px] text-muted-foreground">D</kbd>
+                </Button>
+                <Button
+                  size="sm" variant="outline"
+                  className={cn(voto === "gostei" && "border-emerald-500/50 bg-emerald-50 dark:bg-emerald-950/40")}
+                  onClick={() => onVotar("gostei")}
+                  title={voto === "gostei" ? "Você curtiu — clique para desfazer" : "Eu levaria em conta"}
+                >
+                  <ThumbsUp className={cn("mr-1.5 h-3.5 w-3.5", voto === "gostei" && "text-emerald-700 dark:text-emerald-400")} />
+                  {voto === "gostei" ? "Curtido" : "Levaria"}
+                  <kbd className="ml-1.5 rounded border border-border px-1 text-[10px] text-muted-foreground">L</kbd>
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

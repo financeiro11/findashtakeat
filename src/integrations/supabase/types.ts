@@ -976,6 +976,36 @@ export type Database = {
         }
         Relationships: []
       }
+      asaas_webhook_eventos: {
+        Row: {
+          erro: string | null
+          evento: string
+          id: string
+          objeto_id: string | null
+          payload: Json | null
+          recebido_em: string
+          resultado: string
+        }
+        Insert: {
+          erro?: string | null
+          evento: string
+          id: string
+          objeto_id?: string | null
+          payload?: Json | null
+          recebido_em?: string
+          resultado?: string
+        }
+        Update: {
+          erro?: string | null
+          evento?: string
+          id?: string
+          objeto_id?: string | null
+          payload?: Json | null
+          recebido_em?: string
+          resultado?: string
+        }
+        Relationships: []
+      }
       assinaturas_snapshot: {
         Row: {
           competencia: string
@@ -1849,6 +1879,63 @@ export type Database = {
           rotulo?: string
           termos?: string[]
           votos?: number
+        }
+        Relationships: []
+      }
+      cac_departamento_decisoes: {
+        Row: {
+          cnpj: string | null
+          cod_titulo: number | null
+          criado_em: string
+          criado_por: string | null
+          departamento: string | null
+          escopo: string
+          familia: string
+          id: string
+          motivo: string | null
+        }
+        Insert: {
+          cnpj?: string | null
+          cod_titulo?: number | null
+          criado_em?: string
+          criado_por?: string | null
+          departamento?: string | null
+          escopo: string
+          familia: string
+          id?: string
+          motivo?: string | null
+        }
+        Update: {
+          cnpj?: string | null
+          cod_titulo?: number | null
+          criado_em?: string
+          criado_por?: string | null
+          departamento?: string | null
+          escopo?: string
+          familia?: string
+          id?: string
+          motivo?: string | null
+        }
+        Relationships: []
+      }
+      cac_departamento_familia: {
+        Row: {
+          atualizado_em: string
+          departamento: string
+          familias: string[]
+          observacao: string | null
+        }
+        Insert: {
+          atualizado_em?: string
+          departamento: string
+          familias: string[]
+          observacao?: string | null
+        }
+        Update: {
+          atualizado_em?: string
+          departamento?: string
+          familias?: string[]
+          observacao?: string | null
         }
         Relationships: []
       }
@@ -4623,6 +4710,7 @@ export type Database = {
           preco_alvo: number
           preco_total: number | null
           status: string
+          status_antes_do_voto: string | null
           tentativas: number
           texto: string
           tipo: string
@@ -4643,6 +4731,7 @@ export type Database = {
           preco_alvo: number
           preco_total?: number | null
           status?: string
+          status_antes_do_voto?: string | null
           tentativas?: number
           texto: string
           tipo: string
@@ -4663,6 +4752,7 @@ export type Database = {
           preco_alvo?: number
           preco_total?: number | null
           status?: string
+          status_antes_do_voto?: string | null
           tentativas?: number
           texto?: string
           tipo?: string
@@ -4886,6 +4976,41 @@ export type Database = {
             columns: ["oferta_id"]
             isOneToOne: true
             referencedRelation: "facilities_radar_ofertas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      facilities_radar_iguais: {
+        Row: {
+          alvo_id: string
+          created_at: string
+          criado_por: string | null
+          grupo: string
+          id: number
+          titulo: string
+        }
+        Insert: {
+          alvo_id: string
+          created_at?: string
+          criado_por?: string | null
+          grupo: string
+          id?: number
+          titulo: string
+        }
+        Update: {
+          alvo_id?: string
+          created_at?: string
+          criado_por?: string | null
+          grupo?: string
+          id?: number
+          titulo?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "facilities_radar_iguais_alvo_id_fkey"
+            columns: ["alvo_id"]
+            isOneToOne: false
+            referencedRelation: "facilities_radar_alvos"
             referencedColumns: ["id"]
           },
         ]
@@ -6601,6 +6726,36 @@ export type Database = {
         }
         Relationships: []
       }
+      nfse_cadastro_sincronizado: {
+        Row: {
+          assinatura: string | null
+          detalhe: string | null
+          doc: string
+          id_customer: string
+          resultado: string
+          sincronizado_em: string
+          tentativas: number
+        }
+        Insert: {
+          assinatura?: string | null
+          detalhe?: string | null
+          doc: string
+          id_customer: string
+          resultado: string
+          sincronizado_em?: string
+          tentativas?: number
+        }
+        Update: {
+          assinatura?: string | null
+          detalhe?: string | null
+          doc?: string
+          id_customer?: string
+          resultado?: string
+          sincronizado_em?: string
+          tentativas?: number
+        }
+        Relationships: []
+      }
       nfse_preparo_fila: {
         Row: {
           cobrancas: number | null
@@ -7315,6 +7470,57 @@ export type Database = {
         }
         Relationships: []
       }
+      omie_categoria_cadastro_log: {
+        Row: {
+          acao: string
+          alterado_por: string | null
+          alterado_por_email: string | null
+          codigo: string
+          criado_em: string
+          descricao_de: string | null
+          descricao_para: string | null
+          id: string
+          motivo: string | null
+          referencias: Json | null
+          resposta_omie: Json | null
+          rubrica_dfc: string | null
+          rubrica_dre: string | null
+          superior: string | null
+        }
+        Insert: {
+          acao: string
+          alterado_por?: string | null
+          alterado_por_email?: string | null
+          codigo: string
+          criado_em?: string
+          descricao_de?: string | null
+          descricao_para?: string | null
+          id?: string
+          motivo?: string | null
+          referencias?: Json | null
+          resposta_omie?: Json | null
+          rubrica_dfc?: string | null
+          rubrica_dre?: string | null
+          superior?: string | null
+        }
+        Update: {
+          acao?: string
+          alterado_por?: string | null
+          alterado_por_email?: string | null
+          codigo?: string
+          criado_em?: string
+          descricao_de?: string | null
+          descricao_para?: string | null
+          id?: string
+          motivo?: string | null
+          referencias?: Json | null
+          resposta_omie?: Json | null
+          rubrica_dfc?: string | null
+          rubrica_dre?: string | null
+          superior?: string | null
+        }
+        Relationships: []
+      }
       omie_categoria_regra: {
         Row: {
           atualizado_em: string
@@ -7491,6 +7697,8 @@ export type Database = {
       }
       omie_dre_mapa: {
         Row: {
+          arquivado_em: string | null
+          arquivado_motivo: string | null
           ativo: boolean
           codigo_categoria: string
           created_at: string
@@ -7501,6 +7709,8 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          arquivado_em?: string | null
+          arquivado_motivo?: string | null
           ativo?: boolean
           codigo_categoria: string
           created_at?: string
@@ -7511,6 +7721,8 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          arquivado_em?: string | null
+          arquivado_motivo?: string | null
           ativo?: boolean
           codigo_categoria?: string
           created_at?: string
@@ -8108,6 +8320,315 @@ export type Database = {
         }
         Relationships: []
       }
+      os_assinaturas: {
+        Row: {
+          ano: number | null
+          clientes: number | null
+          competencia: string | null
+          criado_em: string | null
+          id: string | null
+          mes: number | null
+          mrr_aluguel: number | null
+          mrr_banestes: number | null
+          mrr_total: number | null
+          mrr_total_assinatura: number | null
+          perfil: Json | null
+        }
+        Insert: {
+          ano?: number | null
+          clientes?: number | null
+          competencia?: string | null
+          criado_em?: string | null
+          id?: string | null
+          mes?: number | null
+          mrr_aluguel?: number | null
+          mrr_banestes?: number | null
+          mrr_total?: number | null
+          mrr_total_assinatura?: number | null
+          perfil?: Json | null
+        }
+        Update: {
+          ano?: number | null
+          clientes?: number | null
+          competencia?: string | null
+          criado_em?: string | null
+          id?: string | null
+          mes?: number | null
+          mrr_aluguel?: number | null
+          mrr_banestes?: number | null
+          mrr_total?: number | null
+          mrr_total_assinatura?: number | null
+          perfil?: Json | null
+        }
+        Relationships: []
+      }
+      os_canais: {
+        Row: {
+          ativo: boolean | null
+          comite_order: number | null
+          departamento: string | null
+          department_id: string | null
+          id: string | null
+          nome: string | null
+        }
+        Insert: {
+          ativo?: boolean | null
+          comite_order?: number | null
+          departamento?: string | null
+          department_id?: string | null
+          id?: string | null
+          nome?: string | null
+        }
+        Update: {
+          ativo?: boolean | null
+          comite_order?: number | null
+          departamento?: string | null
+          department_id?: string | null
+          id?: string | null
+          nome?: string | null
+        }
+        Relationships: []
+      }
+      os_custos: {
+        Row: {
+          ano: number | null
+          atualizado_em: string | null
+          categoria: string | null
+          competencia: string | null
+          grupo: string | null
+          id: string | null
+          mes: number | null
+          ordem: number | null
+          valor: number | null
+        }
+        Insert: {
+          ano?: number | null
+          atualizado_em?: string | null
+          categoria?: string | null
+          competencia?: string | null
+          grupo?: string | null
+          id?: string | null
+          mes?: number | null
+          ordem?: number | null
+          valor?: number | null
+        }
+        Update: {
+          ano?: number | null
+          atualizado_em?: string | null
+          categoria?: string | null
+          competencia?: string | null
+          grupo?: string | null
+          id?: string | null
+          mes?: number | null
+          ordem?: number | null
+          valor?: number | null
+        }
+        Relationships: []
+      }
+      os_departamentos: {
+        Row: {
+          id: string | null
+          nome: string | null
+          ordem: number | null
+        }
+        Insert: {
+          id?: string | null
+          nome?: string | null
+          ordem?: number | null
+        }
+        Update: {
+          id?: string | null
+          nome?: string | null
+          ordem?: number | null
+        }
+        Relationships: []
+      }
+      os_indicadores: {
+        Row: {
+          ativo: boolean | null
+          canal: string | null
+          channel_id: string | null
+          departamento: string | null
+          department_id: string | null
+          e_formula: boolean | null
+          formula: string | null
+          id: string | null
+          indicador: string | null
+          menor_e_melhor: boolean | null
+          no_bp: boolean | null
+          no_comite: boolean | null
+          no_painel: boolean | null
+          north_star: boolean | null
+          ordem: number | null
+          sensivel: boolean | null
+          unidade: string | null
+        }
+        Insert: {
+          ativo?: boolean | null
+          canal?: string | null
+          channel_id?: string | null
+          departamento?: string | null
+          department_id?: string | null
+          e_formula?: boolean | null
+          formula?: string | null
+          id?: string | null
+          indicador?: string | null
+          menor_e_melhor?: boolean | null
+          no_bp?: boolean | null
+          no_comite?: boolean | null
+          no_painel?: boolean | null
+          north_star?: boolean | null
+          ordem?: number | null
+          sensivel?: boolean | null
+          unidade?: string | null
+        }
+        Update: {
+          ativo?: boolean | null
+          canal?: string | null
+          channel_id?: string | null
+          departamento?: string | null
+          department_id?: string | null
+          e_formula?: boolean | null
+          formula?: string | null
+          id?: string | null
+          indicador?: string | null
+          menor_e_melhor?: boolean | null
+          no_bp?: boolean | null
+          no_comite?: boolean | null
+          no_painel?: boolean | null
+          north_star?: boolean | null
+          ordem?: number | null
+          sensivel?: boolean | null
+          unidade?: string | null
+        }
+        Relationships: []
+      }
+      os_painel_mensal: {
+        Row: {
+          ano: number | null
+          atingimento_pct: number | null
+          atualizado_em: string | null
+          canal: string | null
+          competencia: string | null
+          departamento: string | null
+          e_formula: boolean | null
+          indicador: string | null
+          indicator_id: string | null
+          menor_e_melhor: boolean | null
+          mes: number | null
+          orcado: number | null
+          realizado: number | null
+          sensivel: boolean | null
+          unidade: string | null
+        }
+        Insert: {
+          ano?: number | null
+          atingimento_pct?: number | null
+          atualizado_em?: string | null
+          canal?: string | null
+          competencia?: string | null
+          departamento?: string | null
+          e_formula?: boolean | null
+          indicador?: string | null
+          indicator_id?: string | null
+          menor_e_melhor?: boolean | null
+          mes?: number | null
+          orcado?: number | null
+          realizado?: number | null
+          sensivel?: boolean | null
+          unidade?: string | null
+        }
+        Update: {
+          ano?: number | null
+          atingimento_pct?: number | null
+          atualizado_em?: string | null
+          canal?: string | null
+          competencia?: string | null
+          departamento?: string | null
+          e_formula?: boolean | null
+          indicador?: string | null
+          indicator_id?: string | null
+          menor_e_melhor?: boolean | null
+          mes?: number | null
+          orcado?: number | null
+          realizado?: number | null
+          sensivel?: boolean | null
+          unidade?: string | null
+        }
+        Relationships: []
+      }
+      os_painel_semanal: {
+        Row: {
+          ano: number | null
+          atualizado_em: string | null
+          canal: string | null
+          departamento: string | null
+          e_formula: boolean | null
+          indicador: string | null
+          indicator_id: string | null
+          mes: number | null
+          realizado: number | null
+          rotulo_semana: string | null
+          semana: number | null
+          sensivel: boolean | null
+          unidade: string | null
+        }
+        Insert: {
+          ano?: number | null
+          atualizado_em?: string | null
+          canal?: string | null
+          departamento?: string | null
+          e_formula?: boolean | null
+          indicador?: string | null
+          indicator_id?: string | null
+          mes?: number | null
+          realizado?: number | null
+          rotulo_semana?: string | null
+          semana?: number | null
+          sensivel?: boolean | null
+          unidade?: string | null
+        }
+        Update: {
+          ano?: number | null
+          atualizado_em?: string | null
+          canal?: string | null
+          departamento?: string | null
+          e_formula?: boolean | null
+          indicador?: string | null
+          indicator_id?: string | null
+          mes?: number | null
+          realizado?: number | null
+          rotulo_semana?: string | null
+          semana?: number | null
+          sensivel?: boolean | null
+          unidade?: string | null
+        }
+        Relationships: []
+      }
+      os_sync_log: {
+        Row: {
+          erro: string | null
+          executado_em: string
+          id: number
+          linhas: Json | null
+          ok: boolean
+        }
+        Insert: {
+          erro?: string | null
+          executado_em?: string
+          id?: number
+          linhas?: Json | null
+          ok: boolean
+        }
+        Update: {
+          erro?: string | null
+          executado_em?: string
+          id?: number
+          linhas?: Json | null
+          ok?: boolean
+        }
+        Relationships: []
+      }
       parametrizacao_evidencias: {
         Row: {
           apelido: string | null
@@ -8624,6 +9145,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      plano_contas_fora_da_demonstracao: {
+        Row: {
+          codigo: string
+          demonstrativo: string
+          descricao: string | null
+          marcado_em: string
+          marcado_por: string | null
+          marcado_por_email: string | null
+          motivo: string | null
+        }
+        Insert: {
+          codigo: string
+          demonstrativo: string
+          descricao?: string | null
+          marcado_em?: string
+          marcado_por?: string | null
+          marcado_por_email?: string | null
+          motivo?: string | null
+        }
+        Update: {
+          codigo?: string
+          demonstrativo?: string
+          descricao?: string | null
+          marcado_em?: string
+          marcado_por?: string | null
+          marcado_por_email?: string | null
+          motivo?: string | null
+        }
+        Relationships: []
       }
       playbook_assets: {
         Row: {
@@ -11603,6 +12154,7 @@ export type Database = {
           total: number
         }[]
       }
+      asaas_webhook_vigiar: { Args: never; Returns: Json }
       auditoria_compras: { Args: never; Returns: Json }
       auditoria_envio_quase_la: {
         Args: { p_limite?: number }
@@ -11748,6 +12300,74 @@ export type Database = {
           omie: number
           rubrica: string
           valor_manual_na_dre: boolean
+        }[]
+      }
+      cac_departamento_ignorar: {
+        Args: {
+          p_cnpj?: string
+          p_cod_titulo?: number
+          p_departamento?: string
+          p_escopo: string
+          p_familia: string
+          p_motivo?: string
+        }
+        Returns: string
+      }
+      cac_departamento_reabrir: { Args: { p_id: string }; Returns: number }
+      cac_departamento_suspeitos: {
+        Args: { p_ano: number }
+        Returns: {
+          categoria: string
+          categoria_descricao: string
+          cnpj: string
+          cod_titulo: number
+          decisao_escopo: string
+          decisao_id: string
+          decisao_motivo: string
+          departamento: string
+          departamento_rh: string
+          familia: string
+          familias_esperadas: string[]
+          familias_rh: string[]
+          hist_esperados: number
+          hist_lancamentos: number
+          linha_id: string
+          linha_propria_id: string
+          linha_propria_rotulo: string
+          linha_rotulo: string
+          mes: number
+          mes_travado: boolean
+          pessoa: string
+          severidade: string
+          valor: number
+        }[]
+      }
+      cac_departamento_suspeitos_completo: {
+        Args: { p_ano: number }
+        Returns: {
+          categoria: string
+          categoria_descricao: string
+          cnpj: string
+          cod_titulo: number
+          decisao_escopo: string
+          decisao_id: string
+          decisao_motivo: string
+          departamento: string
+          departamento_rh: string
+          familia: string
+          familias_esperadas: string[]
+          familias_rh: string[]
+          hist_esperados: number
+          hist_lancamentos: number
+          linha_id: string
+          linha_propria_id: string
+          linha_propria_rotulo: string
+          linha_rotulo: string
+          mes: number
+          mes_travado: boolean
+          pessoa: string
+          severidade: string
+          valor: number
         }[]
       }
       cac_linha_casa: {
@@ -13201,6 +13821,8 @@ export type Database = {
           volta_sozinha: boolean
         }[]
       }
+      nfse_asaas_endereco_completo: { Args: { d: Json }; Returns: boolean }
+      nfse_assinatura_endereco: { Args: { d: Json }; Returns: string }
       nfse_avisar_nota_antes_do_pagamento: {
         Args: { p_dias?: number }
         Returns: number
@@ -13214,6 +13836,25 @@ export type Database = {
           p_status: string
         }
         Returns: string
+      }
+      nfse_cadastro_a_sincronizar: {
+        Args: { p_ids: string[] }
+        Returns: {
+          doc: string
+          id_asaas: string
+          id_customer: string
+          n_cod_cli: number
+          tentativas: number
+        }[]
+      }
+      nfse_cadastro_marcar: {
+        Args: {
+          p_detalhe?: string
+          p_doc: string
+          p_id_customer: string
+          p_resultado: string
+        }
+        Returns: undefined
       }
       nfse_carencia: {
         Args: { p_erro: string; p_tentativas: number }
@@ -13714,6 +14355,23 @@ export type Database = {
         Args: { p_ate: string; p_de: string }
         Returns: Json
       }
+      notas_fiscais_busca: {
+        Args: { p_cobrancas?: number; p_termo: string }
+        Returns: {
+          acao: string
+          avulsa: boolean
+          cliente: string
+          criado_em: string
+          id_asaas: string
+          motivo: string
+          n_cod_os: number
+          nfse_chave: string
+          nfse_numero: string
+          operador: string
+          resultado: string
+          valor: number
+        }[]
+      }
       notas_fiscais_candidatas: {
         Args: { p_avulsa?: boolean; p_ids: string[] }
         Returns: {
@@ -13828,6 +14486,10 @@ export type Database = {
           id_anexo: string
           nome: string
         }[]
+      }
+      omie_cache_categoria_aplicar: {
+        Args: { p_categoria: Json }
+        Returns: number
       }
       omie_cache_trocar_categoria: {
         Args: { p_cod_titulo: string; p_codigo: string }
@@ -13959,6 +14621,7 @@ export type Database = {
           tomada: boolean
         }[]
       }
+      os_sync_refresh: { Args: never; Returns: undefined }
       pagamentos_previstos: {
         Args: { p_dia: string; p_janela_dias?: number }
         Returns: {
@@ -14102,6 +14765,25 @@ export type Database = {
         }
         Returns: undefined
       }
+      plano_contas_de_para_saude: {
+        Args: { p_demonstrativo?: string }
+        Returns: Json
+      }
+      plano_contas_lancamentos: {
+        Args: {
+          p_ate?: string
+          p_base?: string
+          p_codigo: string
+          p_de?: string
+          p_departamento?: string
+        }
+        Returns: Json
+      }
+      plano_contas_renomear_referencias: {
+        Args: { p_de: string; p_para: string }
+        Returns: Json
+      }
+      plano_contas_resumo: { Args: { p_base?: string }; Returns: Json }
       pode: { Args: { p_cap: string }; Returns: boolean }
       pode_ler: { Args: { p_cap: string }; Returns: boolean }
       pode_usar_assistente: { Args: never; Returns: boolean }

@@ -44,8 +44,10 @@ function maskPhone(tel: string | null) {
   if (!tel) return "—";
   const d = tel.replace(/\D/g, "");
   if (d.length < 10) return tel;
-  const cc = d.length > 10 ? d.slice(0, d.length - 10) : "55";
-  const ddd = d.slice(-10, -8);
+  // Sem DDI são 10–11 dígitos (DDD + 8 ou 9); com DDI, os 2 primeiros são o 55.
+  const semDdi = d.length > 11 ? d.slice(2) : d;
+  const cc = d.length > 11 ? d.slice(0, 2) : "55";
+  const ddd = semDdi.slice(0, 2);
   return `+${cc} ${ddd} 9****-****`;
 }
 

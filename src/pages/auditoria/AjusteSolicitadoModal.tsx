@@ -107,10 +107,10 @@ export default function AjusteSolicitadoModal({
         return;
       }
       const url = (tokenData as any).url as string;
-      const mensagemFinal = mensagem.replace(
-        "https://findashtakeat.lovable.app/l/{{TOKEN}}",
-        url,
-      );
+      // O domínio vem de `hub_base_url()` no banco e já mudou uma vez (Lovable →
+      // Vercel). Escrito por extenso aqui, a troca não encontrava nada e a
+      // mensagem saía com "{{TOKEN}}" no lugar do link — sem erro nenhum.
+      const mensagemFinal = mensagem.replace(/https?:\/\/\S+\/l\/\{\{TOKEN\}\}/, url);
 
       const { data, error } = await supabase.functions.invoke("enviar-ajuste", {
         body: {

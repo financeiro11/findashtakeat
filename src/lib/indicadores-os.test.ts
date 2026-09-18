@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   atingimento, farol, fmtValorStr, fmtValorCurtoStr, mesPadrao, montarPainel, resumoFarois, sentidoDe,
+  separarConsolidado, serieAte,
   type IndicadorOS, type LinhaMensalOS,
 } from "./indicadores-os";
 
@@ -113,6 +114,27 @@ describe("montarPainel", () => {
     expect(a1.anterior).toBe(108799.9);
     expect(a1.farol).toBe("atencao");
     expect(Math.round(a1.pct!)).toBe(91);
+  });
+
+  it("separa o consolidado: destaques na ordem pedida, o resto na faixa, canais à parte", () => {
+    const comMais = [
+      ...inds,
+      ind({ id: "c2", canal: "Consolidado", indicador: "CAC", ordem: 0 }),
+      ind({ id: "c3", canal: "Consolidado", indicador: "TM MRR", ordem: 2 }),
+    ];
+    const blocos = montarPainel(comMais, linhas, "Aquisição", "2026-08-01", null);
+    const s = separarConsolidado(blocos, "Aquisição");
+    // A ordem é a da lista (Novo MRR Total antes de CAC), não a do OS.
+    expect(s.destaques.map((i) => i.ind.indicador)).toEqual(["Novo MRR Total", "CAC"]);
+    expect(s.demaisConsolidado.map((i) => i.ind.indicador)).toEqual(["TM MRR"]);
+    expect(s.canais.map((b) => b.canal)).toEqual(["Inside Sales"]);
+  });
+
+  it("série até o mês, sem o futuro e sem meta zero", () => {
+    const s = serieAte([...linhas, { indicator_id: "a1", ano: 2026, mes: 9, competencia: "2026-09-01", orcado: 0, realizado: 1 }],
+      "a1", "2026-08-01");
+    expect(s.map((x) => x.competencia)).toEqual(["2026-07-01", "2026-08-01"]);
+    expect(serieAte([{ indicator_id: "a1", ano: 2026, mes: 9, competencia: "2026-09-01", orcado: 0, realizado: 1 }], "a1", "2026-09-01")[0].orcado).toBeNull();
   });
 
   it("linha de total anual (mes 13, competência nula) não derruba o painel", () => {

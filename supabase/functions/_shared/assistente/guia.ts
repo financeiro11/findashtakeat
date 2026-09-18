@@ -159,7 +159,8 @@ export const GUIA: readonly Verbete[] = [
     passos: [
       "Escolha o departamento (Aquisição ou Operação) no alto da tela; a tela abre no último mês fechado, e as setas mudam o mês.",
       "Os cartões do topo são os north stars do departamento; abaixo, um quadro por canal com realizado, meta e quanto da meta foi atingido.",
-      "Clique em qualquer indicador para ver os últimos 13 meses em gráfico e tabela. 'Semanal' mostra o realizado das últimas 8 semanas.",
+      "Clique em qualquer número para abrir a MEMÓRIA DE CÁLCULO: a fórmula com os nomes, a conta com os valores do mês, cada número que entra (clique para descer: LTV → TM MRR → Novo MRR Total → canais) e, no CAC, os custos que entram e os que ficam fora. Embaixo, os últimos 13 meses — clicar num mês troca a conta para ele. 'Semanal' mostra o realizado das últimas 8 semanas.",
+      "A tela mostra os números COMO ESTÃO NO OS — ela tem de bater com ele. O Hub refaz toda fórmula que o OS entrega pronta; quando não bate (ex.: o OS grava as taxas com divisão truncada, e a Taxa de Conversão do Inside Sales de ago/26 dá 6,56% pela fórmula mas aparece 0%), o número ganha um ⚠ e entra no botão 'inconsistências no OS', ao lado do mês, com 'Copiar para enviar' ao time que mantém o OS. A lista também traz fórmula que o OS não calcula, canal sem lançamento, indicador sem a marca 'menor é melhor' e custo que diverge do Painel CAC.",
     ],
     comoLer: [
       "Verde é na meta, amarelo até 15% do lado errado, vermelho além disso. Churn, cancelamento, downsell, CAC, CPL e tempo de atendimento são melhores ABAIXO da meta; investimento é orçamento e fica sem cor.",
@@ -346,11 +347,15 @@ export const GUIA: readonly Verbete[] = [
       "Quando o Hub cria ou corrige o cadastro do cliente no Omie, o endereço vem do Asaas (logradouro, número e CEP preenchidos); a Receita Federal só entra se faltar algo lá. Se a empresa mudou de endereço, atualize primeiro o Asaas — é de lá que o Hub copia.",
       "COBRANÇA QUE NÃO APARECE NA LISTA — o Hub recebe o aviso do Asaas em segundos, mas se uma cobrança criada ou editada ainda não estiver na tela, digite o nome, o CNPJ ou o id (pay_…) na busca e aperte Enter, ou clique em 'Atualizar do Asaas' ao lado da busca. O horário 'Asaas lido às' é o do último aviso do Asaas ou da última varredura, o que for mais recente; o detalhe dos dois aparece ao passar o mouse.",
       "NOTA DO OMIE QUE SAIU ERRADA (valor, endereço, tomador) — passe o mouse na linha e clique em 'Refazer a nota'. A tela mostra o valor atual da cobrança no Asaas e o que muda no cadastro do tomador; escreva o motivo e confirme. O Hub corrige o cadastro com o do Asaas, cancela a nota no Omie e na prefeitura e emite a certa na mesma cobrança. Não é preciso abrir o Omie nem criar outra cobrança no Asaas. Se a cobrança já tiver sido excluída no Asaas, o Hub cancela a nota e emite pela cobrança nova do mesmo cliente e valor, quando houver uma só.",
+      "NOTA QUE SAIU PARA OUTRA EMPRESA (o tomador da nota não é o cliente da cobrança) — abra a Ficha do cliente clicando no nome dele na lista, ou pelo botão 'Ficha do cliente' no topo da tela, buscando por nome, CNPJ/CPF ou pay_…. O alerta vermelho no topo diz para qual empresa a ordem de serviço aponta, e a linha da nota, em 'Notas e ordens de serviço no Omie', mostra o nome e o CNPJ dessa empresa. Clique em 'Reemitir para este cliente' nessa linha: a tela mostra 'Saiu para' e 'A nota nova sai para', o valor atual da cobrança e já traz o motivo escrito. Confirmando, o Hub cancela a nota errada no Omie e na prefeitura e emite a certa na mesma cobrança, com o cadastro do Omie do CNPJ da cobrança.",
+      "COMO DECIDIR, no caso de nota para a empresa errada. (1) O CNPJ da cobrança no Asaas é o certo e só a ordem de serviço antiga apontava para outro cadastro: use 'Reemitir para este cliente' na Ficha. (2) O próprio cliente da cobrança no Asaas está com o CNPJ errado: corrija primeiro no Asaas — a nota nova sai para o CNPJ da cobrança, então reemitir antes disso repete o erro. (3) A ordem de serviço de outra empresa ainda NÃO virou nota: não há o que cancelar; na emissão o Hub percebe que a OS não bate com a cobrança, aposenta a OS velha e cria outra no cadastro certo. (4) O mesmo CNPJ tem mais de um cadastro no Omie: a nota usa o de menor código, que a Ficha indica. (5) A prefeitura recusou o cancelamento ou ele ficou pendente: o Hub mostra o motivo e não emite a nova enquanto a velha estiver de pé — clique de novo depois de alguns minutos.",
     ],
     termos: [
       "nfse", "nfs-e", "nota fiscal", "emitir nota", "emito", "emissão", "faturar", "faturamento",
       "comissão", "nota de comissão", "parceiro", "indicação", "antes do pagamento", "recusa",
       "prefeitura", "tomador", "ordem de serviço", "os",
+      "reemitir", "refazer nota", "cancelar nota", "empresa errada", "cliente errado", "tomador errado",
+      "outro cliente", "outro cadastro", "ficha do cliente",
     ],
   },
   {

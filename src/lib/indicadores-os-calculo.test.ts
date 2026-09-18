@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  avaliar, completarMensal, ehSomaPura, idsSensiveis, parseFormula, refsDe,
+  avaliar, completarMensal, ehSomaPura, escrever, explicar, idsSensiveis, inconsistenciasDoMes, parseFormula, refsDe,
+  textoParaEnviar,
   type AssinaturaOS, type CustoOS,
 } from "./indicadores-os-calculo";
 import type { IndicadorOS, LinhaMensalOS } from "./indicadores-os";
@@ -96,6 +97,16 @@ const assinaturas: AssinaturaOS[] = [
 const saida = completarMensal(indicadores, linhas, custos, assinaturas);
 const de = (id: string) => saida.find((x) => x.indicator_id === id && x.competencia === AGO)!;
 
+describe("escrever", () => {
+  it("devolve a fórmula legível com os parênteses que importam", () => {
+    const no = parseFormula(`[${U(1)}] * ( 1 / ( [${U(2)}] / 100 ) ) * ( [${U(3)}] / 100 )`);
+    expect(escrever(no, (n) => (n.t === "ref" ? { [U(1)]: "TM", [U(2)]: "Churn", [U(3)]: "Margem" }[n.id]! : "?")))
+      .toBe("TM × (1 ÷ (Churn ÷ 100)) × (Margem ÷ 100)");
+    expect(escrever(parseFormula(`[${U(1)}] - ([${U(2)}] - [${U(3)}])`), () => "x")).toBe("x − (x − x)");
+    expect(escrever(parseFormula(`([${U(1)}] + [${U(2)}]) + [${U(3)}]`), () => "x")).toBe("x + x + x");
+  });
+});
+
 describe("idsSensiveis", () => {
   it("herda a marca por dependência, em cadeia", () => {
     const LTV_CAC = U(30);
@@ -111,10 +122,45 @@ describe("idsSensiveis", () => {
 });
 
 describe("completarMensal", () => {
-  it("nunca sobrescreve o OS", () => {
+  it("número lançado no OS (não é fórmula) fica como está", () => {
     expect(de(MRR_IS)).toMatchObject({ realizado: 95264.06, origem: "os" });
-    const comValor = completarMensal(indicadores, [...linhas.filter((x) => x.indicator_id !== TM), l(TM, 999)], custos, assinaturas);
-    expect(comValor.find((x) => x.indicator_id === TM)).toMatchObject({ realizado: 999, origem: "os" });
+  });
+
+  it("fórmula que o OS entregou certa fica como está", () => {
+    const ok = completarMensal(indicadores, [...linhas.filter((x) => x.indicator_id !== FS_CAC), l(FS_CAC, 77093.38 / 34)], custos, assinaturas);
+    expect(ok.find((x) => x.indicator_id === FS_CAC)).toMatchObject({ origem: "os" });
+  });
+
+  it("fórmula que o OS entregou errada NÃO é trocada: vira inconsistência para o time do OS", () => {
+    // Taxa de Conversão real: 217 ÷ 3308 × 100 = 6,56; o OS, dividindo inteiros, grava 0.
+    const TX = U(40), LEADS = U(41);
+    const inds = [...indicadores, ind(LEADS, "Inside Sales", "Leads", { unidade: "count" }),
+      f(TX, "Inside Sales", "Taxa de Conversão", `( [${NOV_IS}] / [${LEADS}] ) * 100`, { unidade: "percent" })];
+    const base = [...linhas, l(LEADS, 3308), l(TX, 0)];
+    const saidaTx = completarMensal(inds, base, custos, assinaturas);
+    expect(saidaTx.find((x) => x.indicator_id === TX)).toMatchObject({ realizado: 0, origem: "os" });
+
+    const inc = inconsistenciasDoMes(inds, saidaTx, custos, AGO);
+    const d = inc.find((x) => x.tipo === "formula_divergente" && x.indicadorId === TX)!;
+    expect(d.texto).toContain("Inside Sales › Taxa de Conversão");
+    expect(d.texto).toContain("6,56");
+    expect(d.texto).toContain("divisão entre inteiros");
+    // A memória de cálculo acusa a mesma coisa.
+    expect(explicar(TX, AGO, inds, saidaTx, custos, assinaturas).observacoes.join(" ")).toContain("mas a fórmula dele");
+  });
+
+  it("inconsistências do mês: o que o OS não calcula, canal que não lançou, marca de sentido, só %", () => {
+    const inc = inconsistenciasDoMes(
+      [...indicadores, ind(U(50), "Sucesso", "% Customer Churn", { departamento: "Operação", unidade: "percent", menor_e_melhor: null } as never)],
+      saida, custos, AGO);
+    const de = (t: string) => inc.filter((x) => x.tipo === t);
+    expect(de("nao_calculado")[0].texto).toContain("Novo MRR Total");
+    expect(de("canal_sem_lancamento").map((x) => x.texto).join(" ")).toContain("Comunidade não lançou Novo MRR, Novos Clientes");
+    expect(de("sentido")[0].texto).toContain("% Customer Churn");
+    expect(de("sem_quantidade")[0].indicadorId).toBe(AT_Q);
+    // Nenhuma divergência inventada: o que o Hub preencheu não é conferido contra si mesmo.
+    expect(de("formula_divergente")).toHaveLength(0);
+    expect(textoParaEnviar(inc, "Ago 26")).toMatch(/^Inconsistências no Takeat OS — Ago 26/);
   });
 
   it("soma com canal faltando sai parcial, dizendo quem faltou, e mantém o orçado", () => {
@@ -163,6 +209,59 @@ describe("completarMensal", () => {
   it("o total anual do OS (mes 13, sem competência) é ignorado, não derruba o cálculo", () => {
     const anual = { indicator_id: CAC, ano: 2026, mes: 13, competencia: null as unknown as string, orcado: 3000, realizado: null };
     expect(() => completarMensal(indicadores, [...linhas, anual], custos, assinaturas)).not.toThrow();
+  });
+
+  describe("explicar", () => {
+    const exp = (id: string) => explicar(id, AGO, indicadores, saida, custos, assinaturas);
+
+    it("fórmula parcial: nomes no lugar dos uuids, conta com valores e o canal que faltou", () => {
+      const e = exp(MRR_TOT);
+      expect(e.tipo).toBe("formula");
+      expect(e.formula).toBe("Inside Sales › Novo MRR + Comunidade › Novo MRR");
+      expect(e.conta).toBe("95.264,06 + — = 95.264,06");
+      expect(e.entradas.map((x) => [x.nome, x.valor])).toEqual([["Inside Sales › Novo MRR", 95264.06], ["Comunidade › Novo MRR", null]]);
+      expect(e.observacoes.join(" ")).toContain("parcial");
+    });
+
+    it("entrada calculada dá para abrir (LTV → TM MRR)", () => {
+      const e = exp(LTV);
+      expect(e.entradas.find((x) => x.id === TM)).toMatchObject({ calculado: true, origem: "hub_parcial" });
+      expect(e.entradas.find((x) => x.id === MARGEM)).toMatchObject({ calculado: false, valor: 76.5 });
+    });
+
+    it("CAC pela regra: lista os custos, marca o que fica fora e fecha a conta", () => {
+      const e = exp(CAC);
+      expect(e.tipo).toBe("regra_cac");
+      const fora = e.custos!.filter((c) => !c.entra).map((c) => c.categoria).sort();
+      expect(fora).toEqual(["Liderança OPS", "Sucesso", "Suporte"]);
+      const somaDentro = e.custos!.filter((c) => c.entra).reduce((a, c) => a + c.valor, 0);
+      expect((somaDentro + 5000) / 251).toBeCloseTo(e.resultado!);
+      expect(e.entradas.map((x) => x.id)).toEqual([ADS, NOV_TOT]);
+    });
+
+    it("custo identificado aparece pelo nome da categoria", () => {
+      const e = exp(FS_CAC);
+      expect(e.formula).toBe("Custo Equipes › Field Sales ÷ Novos Clientes");
+      expect(e.entradas.find((x) => x.nome.startsWith("Custo"))?.valor).toBeCloseTo(77093.38);
+    });
+
+    it("número do OS que não bate com a fórmula dele vira observação", () => {
+      const comErro = saida.map((x) => (x.indicator_id === TM ? { ...x, realizado: 999, origem: "os" as const } : x));
+      const e = explicar(TM, AGO, indicadores, comErro, custos, assinaturas);
+      expect(e.refeito).toBeCloseTo(95264.06 / 251);
+      expect(e.observacoes.join(" ")).toContain("a fórmula dele");
+    });
+
+    it("estimativa do churn de Ativação e Total Clientes mostram de onde vieram", () => {
+      expect(exp(AT_Q)).toMatchObject({ tipo: "estimativa" });
+      expect(exp(AT_Q).entradas.map((x) => x.valor)).toEqual([2.3, 2961]);
+      expect(exp(TOT_CLI)).toMatchObject({ tipo: "carteira", resultado: 3000 });
+    });
+
+    it("lançado direto no OS", () => {
+      expect(exp(MRR_IS)).toMatchObject({ tipo: "lancado", resultado: 95264.06 });
+      expect(exp(MRR_COM)).toMatchObject({ tipo: "sem_dado" });
+    });
   });
 
   it("mês sem custo nenhum não inventa CAC", () => {

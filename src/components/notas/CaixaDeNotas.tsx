@@ -113,6 +113,25 @@ const ESTADO: Record<Estado, { rotulo: string; ajuda: string; tom: string; ordem
  * leitura tirou do papel — CNPJ quando há, senão o nome. É o que transforma
  * "procure o lançamento" em "confirme este". */
 
+/* UMA FILA PARA TODAS AS LINHAS. A busca antiga (`cap_notas_titulos`) levava
+   ~1,8s sozinha (varre o CAP inteiro e derrama em disco). Em 18/09/2026 a caixa tinha
+   99 "sem dono", cada uma disparando a sua busca ao montar: 99 chamadas de uma
+   vez numa máquina Nano, as da cauda estouravam o `statement_timeout` de 8s do
+   `authenticated`, e o banco apertado segurou junto a subida de dois arquivos.
+   Agora no máximo DUAS buscas andam ao mesmo tempo, e a automática só sai
+   quando a linha aparece na tela. */
+const BUSCAS_JUNTAS = 2;
+let buscasAndando = 0;
+const buscasEsperando: (() => void)[] = [];
+async function naFila<T>(fn: () => Promise<T>): Promise<T> {
+  if (buscasAndando >= BUSCAS_JUNTAS) await new Promise<void>((ok) => buscasEsperando.push(ok));
+  buscasAndando++;
+  try { return await fn(); } finally {
+    buscasAndando--;
+    buscasEsperando.shift()?.();
+  }
+}
+
 function AcharTitulo({ linha, aoApontar }: {
   linha: LinhaCaixa;
   aoApontar: (cod: number) => Promise<void>;
@@ -120,22 +139,43 @@ function AcharTitulo({ linha, aoApontar }: {
   const [busca, setBusca] = useState(() => linha.cnpj || linha.nome || "");
   const [linhas, setLinhas] = useState<LinhaTitulo[] | null>(null);
   const [procurando, setProcurando] = useState(false);
+  /* A falha fica NA LINHA, e não num toast: com a fila cheia seriam dezenas de
+     toasts, e "Nenhum lançamento" depois de um erro mente — ninguém procurou. */
+  const [erro, setErro] = useState<string | null>(null);
+  const caixa = useRef<HTMLDivElement>(null);
 
   const procurar = useCallback(async (termo: string) => {
     if (termo.trim().length < 3) { setLinhas([]); return; }
     setProcurando(true);
-    const { data, error } = await sb.rpc("cap_notas_titulos", {
-      p_de: null, p_ate: null,
-      /* Sem recorte de situação: a nota avulsa às vezes é a segunda de um título
-         que já tem anexo, e escondê-lo faria a busca "não achar" o que existe. */
-      p_busca: termo.trim(), p_limite: 40,
-    });
-    setProcurando(false);
-    if (error) { toast.error(`Busca falhou: ${error.message}`); setLinhas([]); return; }
-    setLinhas((data as LinhaTitulo[]) ?? []);
+    setErro(null);
+    try {
+      /* A BUSCA É PRÓPRIA DA CAIXA, e não a `cap_notas_titulos`: aquela,
+         chamada sem período, filtrava `competencia between null and null` e
+         nunca devolveu uma linha — além de custar 1,8s. Esta acha os códigos
+         barato e só dá nome a eles (~0,2s). Sem recorte de situação: a nota
+         avulsa às vezes é a segunda de um título que já tem anexo. */
+      const { data, error } = await naFila(() => sb.rpc("caixa_notas_procurar_titulo", {
+        p_busca: termo.trim(), p_limite: 40,
+      }) as Promise<{ data: unknown; error: { message: string } | null }>);
+      if (error) { setErro(error.message); setLinhas(null); return; }
+      setLinhas((data as LinhaTitulo[]) ?? []);
+    } catch (e: any) {
+      setErro(e?.message ?? String(e)); setLinhas(null);
+    } finally {
+      setProcurando(false);
+    }
   }, []);
 
-  useEffect(() => { void procurar(busca); /* a primeira busca é automática */ }, []); // eslint-disable-line
+  /* A primeira busca é automática, mas só quando a linha entra na tela. */
+  useEffect(() => {
+    const el = caixa.current;
+    if (!el) return;
+    const olho = new IntersectionObserver((vistos) => {
+      if (vistos.some((v) => v.isIntersecting)) { olho.disconnect(); void procurar(busca); }
+    }, { rootMargin: "200px" });
+    olho.observe(el);
+    return () => olho.disconnect();
+  }, []); // eslint-disable-line
 
   /* O MAIS PARECIDO PRIMEIRO: mesmo valor do papel na frente, depois a data mais
      próxima. Sem isso a lista vem na ordem do banco e a linha certa fica no meio
@@ -154,7 +194,7 @@ function AcharTitulo({ linha, aoApontar }: {
   }, [linhas, linha.valor, linha.data_doc]);
 
   return (
-    <div className="mt-2 rounded border border-border bg-muted/30 p-2">
+    <div ref={caixa} className="mt-2 rounded border border-border bg-muted/30 p-2">
       <div className="flex items-center gap-1.5">
         <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <input
@@ -168,6 +208,12 @@ function AcharTitulo({ linha, aoApontar }: {
           {procurando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Procurar"}
         </button>
       </div>
+
+      {erro && (
+        <p className="mt-2 text-[12px] text-amber-700 dark:text-amber-400">
+          A busca não respondeu ({erro}). Aperte Procurar para tentar de novo.
+        </p>
+      )}
 
       {linhas && !linhas.length && (
         <p className="mt-2 text-[12px] text-muted-foreground">

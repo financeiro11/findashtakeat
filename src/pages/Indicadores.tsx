@@ -325,8 +325,8 @@ export default function Indicadores() {
         churn, cancelamento, downsell, CAC, CPL e tempos de atendimento são melhores <em>abaixo</em> da meta,
         mesmo quando o OS não os marca assim; investimento é orçamento, sem cor. <Sigma className="inline h-3 w-3" /> indica
         indicador calculado a partir de outros. Quando o OS deixa um calculado vazio, o Hub calcula com a
-        fórmula do próprio OS e marca: <b>Hub</b> (fórmula completa), <b>parcial</b> (soma só dos canais que
-        lançaram) e <b>≈</b> (estimado). O CAC consolidado soma os custos do OS menos Sucesso, Suporte e
+        fórmula do próprio OS e marca: <b>Hub</b> (fórmula completa), <b>incompleto</b> (soma só dos canais que
+        lançaram — o selo diz qual faltou, ex.: “sem Comunidade”; não é mês em andamento) e <b>≈</b> (estimado). O CAC consolidado soma os custos do OS menos Sucesso, Suporte e
         Liderança OPS, mais o ADS; o CAC MKT é estimado (Investimentos + Comissões + ADS).
       </p>
 
@@ -375,17 +375,21 @@ function FaroisDoCanal({ itens }: { itens: ItemPainel[] }) {
 
 const SELO: Record<Exclude<Origem, "os">, { texto: string; cls: string; titulo: string }> = {
   hub:          { texto: "Hub",     cls: "bg-primary/10 text-primary",  titulo: "O OS deixou vazio; o Hub calculou com a fórmula do OS." },
-  hub_parcial:  { texto: "parcial", cls: "bg-warn/15 text-warn",        titulo: "Soma só dos canais que lançaram." },
+  hub_parcial:  { texto: "incompleto", cls: "bg-warn/15 text-warn",     titulo: "Algum canal não lançou o mês no OS; a soma usa só os que lançaram." },
   hub_estimado: { texto: "≈",       cls: "bg-muted text-muted-foreground", titulo: "Estimado pelo Hub." },
 };
 
 /** Número que não veio pronto do OS diz de onde veio. Sem selo = número do OS. */
-function SeloOrigem({ origem, nota }: { origem?: Origem; nota?: string }) {
+function SeloOrigem({ origem, nota, faltam }: { origem?: Origem; nota?: string; faltam?: string[] }) {
   if (!origem || origem === "os") return null;
   const s = SELO[origem];
+  // "Parcial" solto se lia como "mês em andamento" — o selo diz QUEM faltou.
+  const texto = origem === "hub_parcial" && faltam?.length
+    ? (faltam.length <= 2 ? `sem ${faltam.join(" e ")}` : `sem ${faltam.length} canais`)
+    : s.texto;
   return (
     <span className={cn("rounded px-1 py-px text-[9.5px] font-semibold uppercase tracking-wide", s.cls)} title={nota ?? s.titulo}>
-      {s.texto}
+      {texto}
     </span>
   );
 }
@@ -437,7 +441,7 @@ function LinhaIndicador({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () =>
       <td className="num px-2 py-1.5 text-right">
         <div className="flex items-center justify-end gap-1.5">
           <Variacao atual={i.realizado} anterior={i.anterior} sentido={i.sentido} />
-          <SeloOrigem origem={i.origem} nota={i.nota} />
+          <SeloOrigem origem={i.origem} nota={i.nota} faltam={i.faltam} />
           <AlertaOS id={i.ind.id} />
           <span className="font-medium text-foreground">{fmtValorStr(i.realizado, i.ind.unidade)}</span>
         </div>
@@ -477,7 +481,7 @@ function CardDestaque({ item: i, serie, onAbrir }: {
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="eyebrow truncate">{i.ind.indicador}</span>
-          <SeloOrigem origem={i.origem} nota={i.nota} />
+          <SeloOrigem origem={i.origem} nota={i.nota} faltam={i.faltam} />
           <AlertaOS id={i.ind.id} />
         </div>
         <span className={cn("h-2 w-2 shrink-0 rounded-full", FAROL[i.farol].barra)} title={FAROL[i.farol].rotulo} />
@@ -524,7 +528,7 @@ function TileConsolidado({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () =
         <span className="num text-[16px] font-semibold">
           {comValorExato(i.realizado, fmtValorCurtoStr(i.realizado, u), { moeda: u === "BRL", casas: 2 })}
         </span>
-        <SeloOrigem origem={i.origem} nota={i.nota} />
+        <SeloOrigem origem={i.origem} nota={i.nota} faltam={i.faltam} />
         <AlertaOS id={i.ind.id} />
       </div>
       <div className="num text-[10.5px] text-muted-foreground">
@@ -760,6 +764,7 @@ function MemoriaDeCalculo({
         realizado: l.realizado,
         origem: l.origem,
         nota: l.nota,
+        faltam: l.faltam,
         orcado: (l.orcado ?? 0) > 0 ? l.orcado : null,
         f: farol(l.realizado, l.orcado, sentidoDe(atual)),
         pct: atingimento(l.realizado, l.orcado),
@@ -814,7 +819,7 @@ function MemoriaDeCalculo({
               <div className="flex items-baseline gap-2">
                 <span className="eyebrow">{rotuloMes(mesDaMemoria)}</span>
                 <span className="num text-[24px] font-semibold leading-none">{fmtValorStr(exp.resultado, u)}</span>
-                <SeloOrigem origem={exp.origem} nota={exp.nota} />
+                <SeloOrigem origem={exp.origem} nota={exp.nota} faltam={linhaDoMes?.faltam} />
               </div>
               {linhaDoMes?.orcado != null && (
                 <span className="text-[12px] text-muted-foreground">
@@ -947,7 +952,7 @@ function MemoriaDeCalculo({
                     className={cn("cursor-pointer border-t border-border/40 hover:bg-muted/40", s.competencia === mesDaMemoria && "bg-primary/5")}>
                     <td className="py-1">{s.label}</td>
                     <td className="num py-1 text-right">
-                      <span className="inline-flex items-center gap-1.5"><SeloOrigem origem={s.origem} nota={s.nota} />{fmtValorStr(s.realizado, u)}</span>
+                      <span className="inline-flex items-center gap-1.5"><SeloOrigem origem={s.origem} nota={s.nota} faltam={s.faltam} />{fmtValorStr(s.realizado, u)}</span>
                     </td>
                     <td className="num py-1 text-right text-muted-foreground">{fmtValorStr(s.orcado, u)}</td>
                     <td className={cn("num py-1 text-right font-semibold", FAROL[s.f].texto)}>{fmtPctAtingStr(s.pct)}</td>

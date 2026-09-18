@@ -169,6 +169,15 @@ describe("completarMensal", () => {
     expect(de(NOV_TOT)).toMatchObject({ realizado: 251, origem: "hub_parcial" });
   });
 
+  it("o canal que faltou vai junto até o fim da cadeia (o selo diz 'sem Comunidade', não 'parcial')", () => {
+    expect(de(MRR_TOT).faltam).toEqual(["Comunidade"]);
+    expect(de(TM).faltam).toEqual(["Comunidade"]);
+    expect(de(LTV).faltam).toEqual(["Comunidade"]);
+    expect(de(CAC).faltam).toEqual(["Comunidade"]);
+    expect(de(CAC).nota).toContain("sem Comunidade");
+    expect(de(FS_CAC).faltam).toBeUndefined(); // Field Sales lançou: nada falta
+  });
+
   it("o que depende de parcial herda a marca (TM, LTV)", () => {
     expect(de(TM).realizado).toBeCloseTo(95264.06 / 251);
     expect(de(TM).origem).toBe("hub_parcial");

@@ -36,6 +36,8 @@ export type LinhaMensalOS = {
   origem?: Origem;
   /** Por que o número é parcial/estimado — vai no hover. */
   nota?: string;
+  /** Canais que não lançaram e deixaram o número incompleto. */
+  faltam?: string[];
 };
 
 export type LinhaSemanalOS = {
@@ -143,6 +145,7 @@ export type ItemPainel = {
   sentido: Sentido;
   origem: Origem;
   nota?: string;
+  faltam?: string[];
   realizado: number | null;
   orcado: number | null;
   anterior: number | null;
@@ -182,6 +185,7 @@ export function montarPainel(
       ind, sentido, realizado, orcado,
       origem: l?.origem ?? "os",
       nota: l?.nota,
+      faltam: l?.faltam,
       anterior: num(ant?.realizado),
       pct: atingimento(realizado, orcado),
       farol: farol(realizado, orcado, sentido),

@@ -48,6 +48,8 @@ export interface Tarefa {
   destaques: Array<{ rotulo: string; valor: string }>;
   avisos: string[];
   paraVoce: ParaVoce[];
+  /** O estado próprio de quem tem vista própria (a faixa da emissão em massa lê o placar daqui). */
+  dados: unknown;
   iniciadaEm: number;
   terminadaEm: number | null;
 }
@@ -58,7 +60,7 @@ export interface Contexto {
   segue: () => boolean;
   /** Marca um passo declarado no início. Id desconhecido é ignorado. */
   passo: (id: string, estado: EstadoPasso, detalhe?: string | null) => void;
-  atualizar: (patch: Partial<Pick<Tarefa, "resumo" | "destaques" | "avisos" | "paraVoce" | "subtitulo">>) => void;
+  atualizar: (patch: Partial<Pick<Tarefa, "resumo" | "destaques" | "avisos" | "paraVoce" | "subtitulo" | "dados">>) => void;
 }
 
 export interface Desfecho { estado?: Exclude<EstadoTarefa, "rodando">; resumo?: string | null }
@@ -103,7 +105,7 @@ export function iniciarTarefa(
   const nova: Tarefa = {
     id, chave, titulo: def.titulo, subtitulo: def.subtitulo ?? null, estado: "rodando", resumo: null,
     passos: def.passos.map((p) => ({ ...p, estado: "espera", detalhe: null })),
-    destaques: [], avisos: [], paraVoce: [], iniciadaEm: Date.now(), terminadaEm: null,
+    destaques: [], avisos: [], paraVoce: [], dados: null, iniciadaEm: Date.now(), terminadaEm: null,
   };
   const terminadas = tarefas.filter((t) => t.estado !== "rodando").slice(0, GUARDAR_TERMINADAS - 1);
   tarefas = [nova, ...tarefas.filter((t) => t.estado === "rodando"), ...terminadas];

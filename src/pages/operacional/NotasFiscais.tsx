@@ -28,7 +28,7 @@
 // avisar. Um mês tem ~3.600 cobranças, então ler de uma vez mostraria 1.000 e
 // esconderia o resto — parecendo que o mês é menor do que é.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -49,22 +49,21 @@ import {
   reguaDaLinha, pagaContraNota, exigeAntesDoPagamento, clienteForaDoEspelho,
   xmlAindaVale, formatarDoc, statusAsaas,
   linkPortalNacional, chaveEmBlocos,
-  somarBloco, precisaEsperarOLote, tetoDoDiaAtingido,
-  esperaAntesDeRepetir, PROGRESSO_ZERO, CABEM_NUMA_CHAMADA,
+  CABEM_NUMA_CHAMADA,
   fraseAntesDoPagamento, tipoAntesDoPagamento, TIPOS_ANTES_DO_PAGAMENTO,
-  type LinhaNota, type Situacao, type ProgressoMassa, type TipoAntesDoPagamento,
+  type LinhaNota, type Situacao, type TipoAntesDoPagamento,
 } from "@/lib/notasFiscais";
 import {
   LiberarAntesDoPagamento, ListaAntesDoPagamento, lerAntesDoPagamento, ICONE_TIPO,
   type EntradaAntesDoPagamento, type CobrancaParaLiberar,
 } from "@/components/notas/AntesDoPagamento";
 import { iniciarEmissao, type EmissaoSemCobranca } from "@/components/notas/EmitirAgora";
-import { abrirTarefa } from "@/lib/segundo-plano";
+import { abrirTarefa, dispensar, parar, useTarefas } from "@/lib/segundo-plano";
+import { CHAVE_MASSA, iniciarEmissaoEmMassa, type DadosMassa } from "@/components/notas/massa-tarefa";
 import { NotaSemCobranca } from "@/components/notas/NotaSemCobranca";
 import { RefazerNotaOmie, type TomadorErrado } from "@/components/notas/RefazerNotaOmie";
 import { FichaCliente } from "@/components/notas/FichaCliente";
 
-const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const sb = supabase as any;
 
@@ -136,15 +135,16 @@ export default function NotasFiscais() {
    * régua que se ligou ontem e emitir nota antes de o dinheiro entrar sem ter
    * decidido isso hoje. A avulsa é um ato, e ato se repete, não se herda. */
   const [avulsa, setAvulsa] = useState(false);
-  /* A EMISSÃO EM MASSA — o estado da esteira quando ela roda por aqui.
-   * `null` = parada. O `esperando` é o que distingue "travou" de "o Omie está
-   * faturando o lote anterior", que é a coisa mais comum de acontecer e a mais
-   * fácil de confundir com pane. O ref (e não o state) é o que o laço consegue
-   * ler no meio da execução — state dentro de um `for await` fica congelado no
-   * valor da renderização em que o laço começou. */
-  const [massa, setMassa] = useState<ProgressoMassa | null>(null);
-  const [esperando, setEsperando] = useState(0);
-  const pararMassa = useRef(false);
+  /* A EMISSÃO EM MASSA É UMA TAREFA EM SEGUNDO PLANO (18/09/2026) — ver
+   * `massa-tarefa.ts`. A faixa lê o placar da tarefa, e não de um state desta
+   * página: sair e voltar mostra a mesma leva, e não uma faixa zerada. O
+   * `esperando` é o que distingue "travou" de "o Omie está faturando o lote
+   * anterior", a coisa mais comum de acontecer e a mais fácil de confundir com pane. */
+  const tarefaMassa = useTarefas().find((t) => t.chave === CHAVE_MASSA) ?? null;
+  const dadosMassa = (tarefaMassa?.dados ?? null) as DadosMassa | null;
+  const massa = dadosMassa?.progresso ?? null;
+  const esperando = dadosMassa?.esperando ?? 0;
+  const massaRodando = tarefaMassa?.estado === "rodando";
   /* O TAMANHO DA FILA DA ESTEIRA — e ele não sai das linhas desta tela.
    * A tela mostra o MÊS; a fila é o que a esteira pode emitir AGORA, sob todas
    * as guardas (paralelo com o Asaas, cadastro no Omie, carência). Os dois
@@ -686,97 +686,32 @@ export default function NotasFiscais() {
    * (para — só abre amanhã) e o resto (desiste dessa leva, porque uma leva ruim
    * não pode impedir o mês de fechar).
    */
-  const emitirEmMassa = async () => {
+  const emitirEmMassa = () => {
     const total = filaResumo?.cobrancas ?? 0;
     if (!total) return;
     const levas = Math.ceil(total / CABEM_NUMA_CHAMADA);
 
     if (!window.confirm(
-      `Emitir as ${total.toLocaleString("pt-BR")} notas fiscais da fila no Omie (${brlStr(filaResumo?.valor ?? 0)})?\n\n` +
+      `Emitir as ${total.toLocaleString("pt-BR")} notas fiscais da fila no Omie (${brlStr(filaResumo?.valor ?? 0)})?
+
+` +
       `Vai em ${levas} leva${levas > 1 ? "s" : ""} de até ${CABEM_NUMA_CHAMADA}, esperando o Omie faturar ` +
       `entre uma e outra — cada lote leva alguns minutos. ` +
-      `Estimativa: ${Math.max(1, Math.round(levas * 2.5))} a ${Math.round(levas * 4)} minutos.\n\n` +
-      `ESTA ABA PRECISA FICAR ABERTA. Fechar no meio não desfaz o que já saiu — ` +
-      `só interrompe o resto, e a esteira retoma de onde parou.\n\n` +
+      `Estimativa: ${Math.max(1, Math.round(levas * 2.5))} a ${Math.round(levas * 4)} minutos.
+
+` +
+      `Roda em segundo plano: pode trocar de tela e seguir trabalhando. Só fechar a aba do Hub interrompe — ` +
+      `e mesmo assim o que já saiu não se desfaz, e a esteira retoma de onde parou.
+
+` +
       `Sai a fila da esteira: só cobrança recebida, com cliente no Omie e sem nota do Asaas. ` +
-      `A chave Avulsa não vale aqui — ela é ato de seleção, não de varredura.\n\n` +
+      `A chave Avulsa não vale aqui — ela é ato de seleção, não de varredura.
+
+` +
       `Nota emitida não se apaga: cancela-se, com prazo e justificativa.`,
     )) return;
 
-    pararMassa.current = false;
-    let acc = PROGRESSO_ZERO(levas);
-    setMassa(acc);
-
-    try {
-      for (let leva = 0; leva < levas + 5; leva++) {
-        if (pararMassa.current) throw new Error("__parado__");
-
-        // A fila de agora, não a de um minuto atrás.
-        const { data: proximas, error: erroFila } = await sb.rpc(
-          "notas_fiscais_fila_emissao", { p_limite: CABEM_NUMA_CHAMADA },
-        );
-        if (erroFila) throw erroFila;
-        const ids = ((proximas ?? []) as Array<{ id_asaas: string }>).map((l) => l.id_asaas);
-        if (!ids.length) break; // acabou
-
-        for (let tentativa = 1; ; tentativa++) {
-          if (pararMassa.current) throw new Error("__parado__");
-
-          const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
-            body: { action: "emitir", ids },
-          });
-          const r = error ? { erro: error.message ?? String(error) } : (data ?? {});
-
-          /* O LOTE ANTERIOR AINDA ESTÁ NO FORNO. Nada foi criado, então repetir
-           * é seguro — e é a única coisa que faz o mês fechar. */
-          if (precisaEsperarOLote(r) && tentativa <= 12) {
-            const seg = Math.round(esperaAntesDeRepetir(tentativa) / 1000);
-            // Conta regressiva: sem ela a tela fica parada e parece pane.
-            for (let s = seg; s > 0 && !pararMassa.current; s--) {
-              setEsperando(s);
-              await dorme(1000);
-            }
-            setEsperando(0);
-            continue;
-          }
-
-          acc = somarBloco(acc, r);
-          setMassa({ ...acc });
-
-          if (tetoDoDiaAtingido(r)) {
-            toast.warning("O teto do dia foi atingido.", {
-              description: "A esteira para por hoje e retoma amanhã sozinha. Para empurrar mais, suba o teto do dia em nf_config.",
-              duration: 15000,
-            });
-            throw new Error("__teto__");
-          }
-          break;
-        }
-      }
-      toast.success(`${acc.despachadas} nota(s) despachada(s) ao Omie.`, {
-        description: "O lote é assíncrono: os números chegam nos próximos minutos. Use \"Atualizar do Omie\" para vê-los.",
-        duration: 15000,
-      });
-    } catch (e) {
-      /* Os dois nomes com underscore são desvios de fluxo, não panes: "parado"
-         é o botão da pessoa e "teto" é o freio do dia, que já avisou por conta
-         própria. Só o que não é nenhum dos dois merece cara de erro. */
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg === "__parado__") {
-        toast.info(`Interrompido. ${acc.despachadas} já foram despachadas.`, {
-          description: "O que saiu, saiu — não se desfaz. O resto continua na fila e a esteira retoma.",
-          duration: 12000,
-        });
-      } else if (msg !== "__teto__") {
-        toast.error("A emissão em massa parou.", { description: msg, duration: 12000 });
-      }
-    } finally {
-      setEsperando(0);
-      pararMassa.current = false;
-      await carregar();
-      // O progresso fica na tela depois de terminar: é o resumo do que
-      // aconteceu, e apagá-lo no fim levaria embora justamente o relatório.
-    }
+    iniciarEmissaoEmMassa(total, () => { void carregar(); });
   };
 
   /* O PLACAR DO PARALELO — quantas das notas do Asaas nasceram DEPOIS do corte.
@@ -1172,7 +1107,7 @@ export default function NotasFiscais() {
           aparece quando há leva — uma faixa permanente dizendo "0 para emitir"
           seria um botão de emitir nota fiscal em massa sempre à mão, e este é
           exatamente o tipo de botão que não deve estar sempre à mão. */}
-      {((filaResumo?.cobrancas ?? 0) > 0 || massa) && (
+      {((filaResumo?.cobrancas ?? 0) > 0 || tarefaMassa) && (
         <div className={cn(
           "flex flex-wrap items-center gap-3 rounded-lg border p-3",
           massa ? "border-primary/40 bg-primary/5" : "border-border bg-card",
@@ -1182,7 +1117,12 @@ export default function NotasFiscais() {
             {massa ? (
               <>
                 <span className="font-semibold">
-                  Leva {Math.min(massa.blocosFeitos + 1, massa.blocosTotal)} de {massa.blocosTotal}
+                  {massaRodando
+                    ? `Leva ${Math.min(massa.blocosFeitos + 1, massa.blocosTotal)} de ${massa.blocosTotal}`
+                    : tarefaMassa?.estado === "parada" ? "Emissão em massa interrompida"
+                    : tarefaMassa?.estado === "falhou" ? "A emissão em massa parou"
+                    : tarefaMassa?.avisos.some((a) => a.includes("teto do dia")) ? "Parou no teto do dia"
+                    : "Emissão em massa concluída"}
                 </span>
                 {" · "}
                 <span className="num">{massa.despachadas}</span> despachada{massa.despachadas === 1 ? "" : "s"} ao Omie
@@ -1192,7 +1132,10 @@ export default function NotasFiscais() {
                 <div className="mt-1 text-[11px] text-muted-foreground">
                   {esperando > 0
                     ? `O Omie ainda está faturando a leva anterior — nova tentativa em ${esperando}s. Nada se perdeu.`
+                    : tarefaMassa?.estado === "falhou"
+                    ? `${tarefaMassa.resumo ?? "Erro sem mensagem."} O que já saiu não se desfaz; o resto continua na fila.`
                     : "Despachada não é emitida: o lote é assíncrono e o número da nota chega minutos depois."}
+                  {massaRodando && " Roda em segundo plano — pode trocar de tela."}
                 </div>
                 {/* Os motivos agrupados são o relatório do que NÃO saiu — sem
                     eles, "12 barradas" manda abrir o registro e garimpar. */}
@@ -1216,25 +1159,25 @@ export default function NotasFiscais() {
                   e não o que está filtrado acima. Vai em levas de {CABEM_NUMA_CHAMADA},
                   esperando o Omie faturar entre uma e outra
                   {" · "}~{Math.max(1, Math.round(Math.ceil((filaResumo?.cobrancas ?? 0) / CABEM_NUMA_CHAMADA) * 2.5))}–
-                  {Math.round(Math.ceil((filaResumo?.cobrancas ?? 0) / CABEM_NUMA_CHAMADA) * 4)} min, com esta aba aberta
+                  {Math.round(Math.ceil((filaResumo?.cobrancas ?? 0) / CABEM_NUMA_CHAMADA) * 4)} min, em segundo plano
                 </div>
               </>
             )}
           </div>
-          {massa && esperando === 0 && massa.blocosFeitos < massa.blocosTotal && (
+          {massaRodando && esperando === 0 && (
             <Loader2 className="h-4 w-4 animate-spin text-primary" />
           )}
-          {massa && massa.blocosFeitos < massa.blocosTotal ? (
+          {tarefaMassa && massaRodando ? (
             <button
-              onClick={() => { pararMassa.current = true; }}
+              onClick={() => parar(tarefaMassa.id)}
               className="ghost-btn flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs"
               title="Para depois da leva atual. O que já foi despachado não se desfaz."
             >
               <Square className="h-3.5 w-3.5" />
               Parar
             </button>
-          ) : massa ? (
-            <button onClick={() => setMassa(null)} className="ghost-btn rounded-md border border-border px-3 py-1.5 text-xs">
+          ) : tarefaMassa ? (
+            <button onClick={() => dispensar(tarefaMassa.id)} className="ghost-btn rounded-md border border-border px-3 py-1.5 text-xs">
               Fechar
             </button>
           ) : (

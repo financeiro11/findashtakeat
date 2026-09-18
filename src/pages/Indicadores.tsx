@@ -325,8 +325,8 @@ export default function Indicadores() {
         churn, cancelamento, downsell, CAC, CPL e tempos de atendimento são melhores <em>abaixo</em> da meta,
         mesmo quando o OS não os marca assim; investimento é orçamento, sem cor. <Sigma className="inline h-3 w-3" /> indica
         indicador calculado a partir de outros. Quando o OS deixa um calculado vazio, o Hub calcula com a
-        fórmula do próprio OS e marca: <b>Hub</b> (fórmula completa), <b>incompleto</b> (soma só dos canais que
-        lançaram — o selo diz qual faltou, ex.: “sem Comunidade”; não é mês em andamento) e <b>≈</b> (estimado). O CAC consolidado soma os custos do OS menos Sucesso, Suporte e
+        fórmula do próprio OS — clique no número para ver a conta, de onde veio cada parcela e se algum
+        canal deixou de lançar o mês. O CAC consolidado soma os custos do OS menos Sucesso, Suporte e
         Liderança OPS, mais o ADS; o CAC MKT é estimado (Investimentos + Comissões + ADS).
       </p>
 
@@ -441,7 +441,6 @@ function LinhaIndicador({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () =>
       <td className="num px-2 py-1.5 text-right">
         <div className="flex items-center justify-end gap-1.5">
           <Variacao atual={i.realizado} anterior={i.anterior} sentido={i.sentido} />
-          <SeloOrigem origem={i.origem} nota={i.nota} faltam={i.faltam} />
           <AlertaOS id={i.ind.id} />
           <span className="font-medium text-foreground">{fmtValorStr(i.realizado, i.ind.unidade)}</span>
         </div>
@@ -481,7 +480,6 @@ function CardDestaque({ item: i, serie, onAbrir }: {
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="eyebrow truncate">{i.ind.indicador}</span>
-          <SeloOrigem origem={i.origem} nota={i.nota} faltam={i.faltam} />
           <AlertaOS id={i.ind.id} />
         </div>
         <span className={cn("h-2 w-2 shrink-0 rounded-full", FAROL[i.farol].barra)} title={FAROL[i.farol].rotulo} />
@@ -528,7 +526,6 @@ function TileConsolidado({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () =
         <span className="num text-[16px] font-semibold">
           {comValorExato(i.realizado, fmtValorCurtoStr(i.realizado, u), { moeda: u === "BRL", casas: 2 })}
         </span>
-        <SeloOrigem origem={i.origem} nota={i.nota} faltam={i.faltam} />
         <AlertaOS id={i.ind.id} />
       </div>
       <div className="num text-[10.5px] text-muted-foreground">

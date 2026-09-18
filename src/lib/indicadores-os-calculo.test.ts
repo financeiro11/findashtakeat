@@ -146,6 +146,11 @@ describe("completarMensal", () => {
     expect(de(AT_Q)).toMatchObject({ realizado: Math.round(0.023 * 2961), origem: "hub_estimado" });
   });
 
+  it("o total anual do OS (mes 13, sem competência) é ignorado, não derruba o cálculo", () => {
+    const anual = { indicator_id: CAC, ano: 2026, mes: 13, competencia: null as unknown as string, orcado: 3000, realizado: null };
+    expect(() => completarMensal(indicadores, [...linhas, anual], custos, assinaturas)).not.toThrow();
+  });
+
   it("mês sem custo nenhum não inventa CAC", () => {
     const semCusto = completarMensal(indicadores, linhas, [], assinaturas);
     expect(semCusto.find((x) => x.indicator_id === CAC)?.realizado).toBeNull();

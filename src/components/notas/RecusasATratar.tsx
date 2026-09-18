@@ -27,8 +27,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { toast } from "sonner";
 import { AlertTriangle, Check, RefreshCw, Loader2, ChevronRight } from "lucide-react";
+import { useTarefas } from "@/lib/segundo-plano";
+import {
+  CHAVE_CONSERTAR, CHAVE_DEVOLVER, iniciarConserto, iniciarDevolucao,
+  type DadosConsertar, type DadosDevolver,
+} from "./recusas-tarefas";
 import { cn } from "@/lib/utils";
 import { comValorExato } from "@/components/ValorExato";
 
@@ -164,103 +168,22 @@ export default function RecusasATratar() {
    * põe umas dezenas de OS dentro dos 150s da Edge, então a função devolve
    * `faltam` e a tela chama de novo. É o mesmo desenho da emissão em massa do
    * painel do mês, pelo mesmo motivo. */
-  const [devolvendo, setDevolvendo] = useState(false);
-  const [devolvido, setDevolvido] = useState<{ devolvidas: number; cobrancas: number; faltam: number } | null>(null);
+  /* OS DOIS LAÇOS SÃO TAREFAS EM SEGUNDO PLANO (18/09/2026) — ver
+   * `recusas-tarefas.ts`. O placar vem da tarefa, e não de um state daqui: sair
+   * da aba e voltar mostra a mesma volta, e o botão continua travado enquanto
+   * ela roda — não fica livre para mandar a mesma coisa de novo. Ao terminar,
+   * a lista relê: as OS aposentadas somem daqui (a RPC filtra
+   * `carimbo_liberado_em is null`). */
+  const tarefas = useTarefas();
+  const tDevolver = tarefas.find((t) => t.chave === CHAVE_DEVOLVER) ?? null;
+  const tConsertar = tarefas.find((t) => t.chave === CHAVE_CONSERTAR) ?? null;
+  const devolvendo = tDevolver?.estado === "rodando";
+  const consertando = tConsertar?.estado === "rodando";
+  const devolvido = (tDevolver?.dados ?? null) as DadosDevolver | null;
+  const consertado = (tConsertar?.dados ?? null) as DadosConsertar | null;
 
-  const devolver = async () => {
-    setDevolvendo(true);
-    let devolvidas = 0;
-    const cobrancas = new Set<string>();
-    try {
-      // O teto de voltas existe para o laço não virar infinito se `faltam` parar
-      // de diminuir (uma OS que falha sempre continua sendo candidata).
-      for (let volta = 0; volta < 12; volta++) {
-        const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
-          body: { action: "devolver_a_esteira", dias, limite: 50 },
-        });
-        if (error) throw error;
-        if (data?.erro) throw new Error(data.erro);
-        devolvidas += Number(data?.devolvidas ?? 0);
-        for (const d of (data?.detalhe?.devolvidas ?? [])) cobrancas.add(String(d.id_cobranca));
-        setDevolvido({ devolvidas, cobrancas: cobrancas.size, faltam: Number(data?.faltam ?? 0) });
-        if (!Number(data?.faltam ?? 0) || !Number(data?.devolvidas ?? 0)) break;
-      }
-      toast.success(`${devolvidas} OS devolvida(s) à esteira.`, {
-        description: "A emissão roda de 10 em 10 minutos das 13h às 21h (UTC) e vai pegando a fila. Acompanhe no Registro de emissões.",
-        duration: 12000,
-      });
-      await carregar();
-    } catch (e: any) {
-      toast.error("Não deu para devolver à esteira.", { description: e?.message });
-    } finally {
-      setDevolvendo(false);
-    }
-  };
-
-  /* TENTAR O CONSERTO AGORA, em vez de esperar as 12:45 UTC.
-   *
-   * A rodada automática existe desde 29/08/2026 e roda uma vez por dia, com teto
-   * de quinze cadastros. Quem abre esta tela com sessenta e duas recusas na mão
-   * não tinha como dizer "tente estas agora" — e a partir de 12/09/2026 isso
-   * passou a importar, porque a rodada aprendeu a consertar telefone e código do
-   * município (ver `camposAcusados`): dezessete das sessenta e duas eram
-   * conserto de máquina esperando o relógio.
-   *
-   * EM LEVAS, e o laço mora aqui, pelo mesmo motivo da devolução à esteira: cada
-   * cliente custa três chamadas externas e a Edge morre aos 150s. O teto de
-   * voltas impede laço infinito quando o servidor deixa de avançar — o que
-   * acontece por desenho: quem foi tentado sai da fila até a recusa seguinte.
-   *
-   * NÃO REEMITE NADA. Conserta o CADASTRO; a nota sai depois, pelo "Devolver à
-   * esteira" ao lado ou pelo reenvio na tela do Omie. Dizer isso no toast é o
-   * que evita alguém ficar esperando a nota aparecer sozinha. */
-  const [consertando, setConsertando] = useState(false);
-  const [consertado, setConsertado] = useState<
-    { corrigidos: number; alvos: number; precisam: number } | null
-  >(null);
-
-  const consertarCadastros = async () => {
-    setConsertando(true);
-    let corrigidos = 0;
-    let alvos = 0;
-    let precisam = 0;
-    try {
-      for (let volta = 0; volta < 6; volta++) {
-        const { data, error } = await sb.functions.invoke("omie-clientes-criar", {
-          body: { action: "corrigir_recusados", operador: "tela-recusas" },
-        });
-        if (error) throw error;
-        if (data?.erro) throw new Error(data.erro);
-        if (data?.pulada) throw new Error(String(data.pulada));
-        const nesta = Number(data?.alvos ?? 0);
-        alvos += nesta;
-        corrigidos += Number(data?.corrigidos ?? 0);
-        precisam += Number(data?.precisam_de_gente ?? 0);
-        setConsertado({ corrigidos, alvos, precisam });
-        // Fila vazia: nada mais a tentar até a próxima recusa.
-        if (!nesta) break;
-      }
-      if (!alvos) {
-        toast.info("Nenhum cadastro na fila do conserto.", {
-          description: "Ou já foram tentados depois da última recusa, ou alguém os editou à mão — "
-            + "nos dois casos a máquina não redecide.",
-        });
-      } else {
-        toast.success(`${corrigidos} de ${alvos} cadastro(s) corrigidos no Omie.`, {
-          description: "Isto conserta o CADASTRO, não emite nota. Use “Devolver à esteira” para a "
-            + "nota sair de novo — ou o “Reenviar NFS-e” do Omie, na OS que já faturou.",
-          duration: 12000,
-        });
-      }
-      await carregar();
-    } catch (e) {
-      toast.error("Não deu para consertar os cadastros.", {
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setConsertando(false);
-    }
-  };
+  const devolver = () => { iniciarDevolucao(dias, () => { void carregar(); }); };
+  const consertarCadastros = () => { iniciarConserto(() => { void carregar(); }); };
 
   if (carregando) {
     return (
@@ -340,7 +263,9 @@ export default function RecusasATratar() {
                   <strong className="text-foreground">
                     {devolvido.devolvidas} OS devolvida(s) · {devolvido.cobrancas} cobrança(s)
                   </strong>
-                  {devolvido.faltam > 0 ? ` · faltam ${devolvido.faltam}` : " · acabou"}
+                  {devolvendo
+                    ? devolvido.faltam > 0 ? ` · faltam ${devolvido.faltam} · segue em segundo plano` : " · segue em segundo plano"
+                    : devolvido.faltam > 0 ? ` · faltam ${devolvido.faltam}` : " · acabou"}
                 </>
               )}
             </p>
@@ -375,6 +300,7 @@ export default function RecusasATratar() {
                     {consertado.corrigidos} de {consertado.alvos} corrigido(s)
                   </strong>
                   {consertado.precisam > 0 ? ` · ${consertado.precisam} seguem precisando de gente` : ""}
+                  {consertando ? " · segue em segundo plano" : ""}
                 </>
               )}
             </p>

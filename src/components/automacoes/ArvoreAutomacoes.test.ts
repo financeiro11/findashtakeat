@@ -2,9 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, trilhaDe, bandaNoY,
   fiosDoTronco, caminhoSuave, temUpgrade, impactoDe, inversoesDe, LANE_W,
-  estaAtiva, foiConstruida,
+  estaAtiva, foiConstruida, concluirUpgrade, upgradesEntregues,
   type Automacao,
 } from "./arvore-layout";
+import { itemDe } from "./esteira";
 import { iconeDe, nomeIconeDe, ICONES } from "./arvore-icones";
 
 /* A árvore precisa nascer legível com o catálogo como ele está hoje: quase tudo
@@ -405,6 +406,42 @@ describe("temUpgrade", () => {
   it("espaço em branco não vale como sugestão", () => {
     expect(temUpgrade({ upgrade: "   " })).toBe(false);
     expect(temUpgrade({ upgrade: "\n\t " })).toBe(false);
+  });
+});
+
+describe("concluirUpgrade", () => {
+  const agora = new Date("2026-09-17T12:00:00Z");
+
+  it("move o texto para o histórico, apaga a seta e tira da fila", () => {
+    const r = auto({ id: "nf", upgrade: "  Emissão pelo Omie  ", esteira_upgrade: true, esteira_ordem: 2, tarefa_id: "t1" });
+    const patch = concluirUpgrade(r, agora)!;
+    expect(patch.upgrade).toBeNull();
+    expect(patch.esteira_upgrade).toBe(false);
+    expect(patch.esteira_ordem).toBeNull();
+    expect(patch.upgrades_entregues).toEqual([{ texto: "Emissão pelo Omie", em: agora.toISOString(), tarefa_id: "t1" }]);
+
+    const depois = { ...r, ...patch };
+    expect(temUpgrade(depois)).toBe(false);
+    expect(itemDe(depois)).toBeNull();
+  });
+
+  it("acrescenta ao fim — não reescreve o que já foi entregue", () => {
+    const antigo = { texto: "primeiro", em: "2026-01-01T00:00:00.000Z", tarefa_id: null };
+    const patch = concluirUpgrade(auto({ id: "x", upgrade: "segundo", upgrades_entregues: [antigo] }), agora)!;
+    expect(patch.upgrades_entregues!.map((u) => u.texto)).toEqual(["primeiro", "segundo"]);
+  });
+
+  it("sem upgrade de verdade não há o que concluir", () => {
+    expect(concluirUpgrade(auto({ id: "x", upgrade: "   " }), agora)).toBeNull();
+    expect(concluirUpgrade(auto({ id: "y", upgrade: null }), agora)).toBeNull();
+  });
+
+  it("lê linha antiga e jsonb torto sem quebrar", () => {
+    expect(upgradesEntregues({})).toEqual([]);
+    expect(upgradesEntregues({ upgrades_entregues: null })).toEqual([]);
+    expect(upgradesEntregues({ upgrades_entregues: { texto: "x" } })).toEqual([]);
+    expect(upgradesEntregues({ upgrades_entregues: [{ texto: "ok", em: "2026-09-01" }, { lixo: 1 }, null] }))
+      .toEqual([{ texto: "ok", em: "2026-09-01" }]);
   });
 });
 

@@ -1534,6 +1534,7 @@ export type Database = {
           ultima_falha: string | null
           updated_at: string
           upgrade: string | null
+          upgrades_entregues: Json
         }
         Insert: {
           ativa?: boolean
@@ -1565,6 +1566,7 @@ export type Database = {
           ultima_falha?: string | null
           updated_at?: string
           upgrade?: string | null
+          upgrades_entregues?: Json
         }
         Update: {
           ativa?: boolean
@@ -1596,6 +1598,7 @@ export type Database = {
           ultima_falha?: string | null
           updated_at?: string
           upgrade?: string | null
+          upgrades_entregues?: Json
         }
         Relationships: [
           {

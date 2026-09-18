@@ -17,7 +17,7 @@ import {
   montarLayout, correnteDe, destravadasPor, resumoTrilhas, alvosValidos, bandaNoY,
   fiosDoTronco, caminhoSuave, inversoesDe,
   corTrilha, trilhaDe, tierDe, horasDe, iniciaisDe, estaAtiva, DESATIVADA_COR,
-  TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS, temUpgrade, IMPACTO_OPTS, ESFORCO_OPTS,
+  TIER_META, TRILHAS, NIVEIS_PADRAO, STATUS_OPTS, temUpgrade, concluirUpgrade, IMPACTO_OPTS, ESFORCO_OPTS,
   type Automacao, type NoPos, type Nivel, type Faixa,
 } from "./arvore-layout";
 import { iconeDe, ICONES, NOMES_ICONES, nomeIconeDe } from "./arvore-icones";
@@ -52,7 +52,7 @@ import takeatSymbol from "@/assets/takeat-symbol-white.png";
    ficha ofereceria "ver a tarefa" sobre algo que sumiu do quadro. */
 // Template literal e não `+`: concatenar com `+` devolve `string` solto e o
 // supabase-js para de conferir os nomes das colunas contra o types.ts.
-const CAMPOS = `id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,ativa,desativada_em,desativada_motivo,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade,tarefa_id,${EMBED_TAREFA}` as const;
+const CAMPOS = `id,automacao,categoria,nivel,status,horas_mes,ferramentas,responsavel,impacto,esforco,dor,solucao,observacao,upgrade,upgrades_entregues,ativa,desativada_em,desativada_motivo,depende_de,pos_x,pos_y,icone,ordem,esteira_ordem,esteira_upgrade,tarefa_id,${EMBED_TAREFA}` as const;
 
 /* A escolha de recolher as trilhas fica salva por navegador — é preferência de
    quem está olhando, não dado do catálogo. */
@@ -472,6 +472,19 @@ export default function ArvoreAutomacoes() {
     if (error) { toast.error(error.message); return; }
     await carregar();
     toast.success(entrando ? "Upgrade entrou na linha de produção." : "Upgrade saiu da linha de produção.");
+  };
+
+  /* Upgrade pronto: o texto vai para o histórico, a seta apaga e o item sai da
+     fila. Confirma porque não tem "desfazer" na tela — voltar seria reescrever
+     o upgrade no editor. */
+  const concluirUpgradeDe = async (r: Automacao) => {
+    const patch = concluirUpgrade(r);
+    if (!patch) return;
+    if (!confirm(`Marcar o upgrade de "${r.automacao}" como entregue?\n\n"${r.upgrade!.trim()}"\n\nEle sai da linha de produção e fica no histórico da ficha. Se houver um próximo upgrade, é só escrever no Editar.`)) return;
+    const { error } = await supabase.from("automacoes_catalogo").update(patch as never).eq("id", r.id);
+    if (error) { toast.error(error.message); return; }
+    await carregar();
+    toast.success("Upgrade entregue — registrado no histórico da automação.");
   };
 
   /* Liga/desliga — o oposto de excluir.
@@ -950,6 +963,7 @@ export default function ArvoreAutomacoes() {
             onFechar={() => setSel(null)}
             onEsteira={tierDe(selNo.r.status) === "on" && estaAtiva(selNo.r) ? () => alternarEsteira(selNo.r) : undefined}
             onAlternarAtiva={() => alternarAtiva(selNo.r)}
+            onConcluirUpgrade={tierDe(selNo.r.status) === "on" && estaAtiva(selNo.r) ? () => concluirUpgradeDe(selNo.r) : undefined}
             onCriarTarefa={async (resp) => {
               await criarTarefaDaAutomacao(selNo.r.id, resp);
               await carregar();
@@ -1296,6 +1310,7 @@ export default function ArvoreAutomacoes() {
           onExcluir={excluir}
           onDesligar={desligar}
           onAlternarAtiva={alternarAtiva}
+          onConcluirUpgrade={concluirUpgradeDe}
           onRecarregar={carregar}
         />
       )}

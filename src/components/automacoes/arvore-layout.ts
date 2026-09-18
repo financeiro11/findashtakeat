@@ -27,6 +27,8 @@ export type Automacao = {
   observacao: string | null;
   /** melhoria possível numa automação que já roda — acende a seta de oportunidade */
   upgrade?: string | null;
+  /** upgrades já feitos — `upgrade` é só o próximo. Ver `concluirUpgrade` */
+  upgrades_entregues?: UpgradeEntregue[] | null;
   /** está em uso HOJE — ver `estaAtiva`. Nada a ver com `status`, que é a história */
   ativa?: boolean | null;
   desativada_em?: string | null;
@@ -495,6 +497,41 @@ export function alvosValidos(rows: Automacao[], id: string): Automacao[] {
 
 /** Tem oportunidade de melhoria registrada? (só conta texto de verdade) */
 export const temUpgrade = (r: { upgrade?: string | null }) => !!r.upgrade && r.upgrade.trim().length > 0;
+
+/* --------------------------- upgrade entregue ---------------------------
+ * Concluir um upgrade não é apagá-lo: o texto vai para `upgrades_entregues`
+ * com a data, e `upgrade` fica livre para o próximo. Sem isso a seta seguia
+ * acesa sobre algo já feito, e a única saída (apagar no editor) sumia com o
+ * registro de que foi feito. */
+export type UpgradeEntregue = { texto: string; em: string; tarefa_id?: string | null };
+
+/** A lista gravada, tolerante a linha antiga (null) e a jsonb que não é lista. */
+export function upgradesEntregues(r: { upgrades_entregues?: unknown }): UpgradeEntregue[] {
+  const v = r.upgrades_entregues;
+  if (!Array.isArray(v)) return [];
+  return v.filter((u): u is UpgradeEntregue => !!u && typeof u.texto === "string" && typeof u.em === "string");
+}
+
+/**
+ * O patch que conclui o upgrade atual — null se não há upgrade para concluir.
+ * Sai também da linha de produção e solta o pino: o trabalho da fila acabou, e
+ * o próximo upgrade, quando escrito, entra de novo por opt-in.
+ */
+export function concluirUpgrade(
+  r: Pick<Automacao, "upgrade" | "upgrades_entregues" | "tarefa_id">,
+  agora: Date = new Date(),
+): Pick<Automacao, "upgrade" | "upgrades_entregues" | "esteira_upgrade" | "esteira_ordem"> | null {
+  if (!temUpgrade(r)) return null;
+  return {
+    upgrade: null,
+    upgrades_entregues: [
+      ...upgradesEntregues(r),
+      { texto: r.upgrade!.trim(), em: agora.toISOString(), tarefa_id: r.tarefa_id ?? null },
+    ],
+    esteira_upgrade: false,
+    esteira_ordem: null,
+  };
+}
 
 export const iniciaisDe = (nome: string | null | undefined) => {
   if (!nome) return "";

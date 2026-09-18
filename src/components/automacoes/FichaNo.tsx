@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Link2, Unlink, Pencil, Maximize2, Trash2, X, ListPlus, ListChecks, ClipboardCheck, ClipboardPlus, Loader2, Power, PowerOff } from "lucide-react";
+import { ArrowUp, Link2, Unlink, Pencil, Maximize2, Trash2, X, ListPlus, ListChecks, ClipboardCheck, ClipboardPlus, Loader2, Power, PowerOff, CheckCircle2 } from "lucide-react";
 import {
-  TIER_META, nomeNivel, bandaDe, horasDe, listaFerramentas, temUpgrade, impactoDe, esforcoDe,
+  TIER_META, nomeNivel, bandaDe, horasDe, listaFerramentas, temUpgrade, upgradesEntregues, impactoDe, esforcoDe,
   estaAtiva, foiConstruida, desdeQuando, DESATIVADA_COR,
   type NoPos, type Nivel,
 } from "./arvore-layout";
@@ -18,7 +18,7 @@ import { canonResp, PESSOAS, AMBOS } from "@/lib/responsavel";
 export default function FichaNo({
   n, niveis, prereq, ancora, caixa,
   onEditar, onConectar, onDesligar, onSoltar, onExcluir, onFechar, onEsteira,
-  onCriarTarefa, onVerTarefa, onAlternarAtiva,
+  onCriarTarefa, onVerTarefa, onAlternarAtiva, onConcluirUpgrade,
 }: {
   n: NoPos; niveis: Nivel[]; prereq: string | null;
   ancora: { x: number; y: number };   // posição do nó em coordenadas de tela
@@ -34,6 +34,8 @@ export default function FichaNo({
   onSoltar?: () => void;
   /** só quando faz sentido pôr/tirar o upgrade da linha de produção */
   onEsteira?: () => void;
+  /** o upgrade ficou pronto — só em automação que roda e está ligada */
+  onConcluirUpgrade?: () => void;
   /** abre a tarefa em /tarefas; recebe quem vai tocar */
   onCriarTarefa?: (responsavel: string) => Promise<void>;
   onVerTarefa?: () => void;
@@ -73,6 +75,8 @@ export default function FichaNo({
   const anterior = !viva && tarefa
     ? tarefa.arquivada_em ? "arquivada" : "concluída"
     : null;
+
+  const entregues = upgradesEntregues(n.r);
 
   const criar = async (resp: string) => {
     if (!onCriarTarefa) return;
@@ -216,6 +220,40 @@ export default function FichaNo({
                 : <><ListPlus className="h-3 w-3" /> Pôr este upgrade na linha de produção</>}
             </button>
           )}
+          {/* Tarefa concluída + upgrade ainda aceso é quase sempre "ficou pronto e
+              ninguém marcou" — aí o botão ganha destaque em vez de ficar discreto. */}
+          {onConcluirUpgrade && (
+            <button
+              onClick={onConcluirUpgrade}
+              title="O upgrade ficou pronto: sai da linha de produção e vai para o histórico desta ficha"
+              className={`mt-1.5 inline-flex w-full items-center justify-center gap-1.5 rounded border px-2 py-1 text-[10.5px] font-semibold transition ${
+                anterior === "concluída"
+                  ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                  : "border-white/[0.12] text-slate-300 hover:border-emerald-500/50 hover:text-emerald-400"
+              }`}
+            >
+              <CheckCircle2 className="h-3 w-3" /> Upgrade pronto — concluir
+            </button>
+          )}
+        </div>
+      )}
+
+      {entregues.length > 0 && (
+        <div className="mt-2.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-2">
+          <div className="mb-1 text-[8.5px] font-bold tracking-[0.14em] text-slate-600">
+            UPGRADES ENTREGUES · {entregues.length}
+          </div>
+          <ul className="space-y-1">
+            {[...entregues].reverse().map((u, i) => (
+              <li key={`${u.em}-${i}`} className="flex items-start gap-1.5 text-[10.5px] leading-snug text-slate-400">
+                <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500/70" />
+                <span className="min-w-0">
+                  {u.texto}
+                  <span className="num ml-1 text-slate-600">· {new Date(u.em).toLocaleDateString("pt-BR")}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

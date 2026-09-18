@@ -22,7 +22,7 @@
  * ========================================================================== */
 
 import {
-  trilhaDe, nomeNivel, listaFerramentas, impactoDe, esforcoDe, temUpgrade, bandaDe,
+  trilhaDe, nomeNivel, listaFerramentas, impactoDe, esforcoDe, temUpgrade, upgradesEntregues, bandaDe,
   NIVEIS_PADRAO,
   type Automacao, type Nivel,
 } from "./arvore-layout";
@@ -92,6 +92,7 @@ export function camposDe(r: Automacao, niveis: Nivel[] = NIVEIS_PADRAO): Campo[]
     { rotulo: "solução", texto: r.solucao || "", peso: 42 },
     { rotulo: "dor", texto: r.dor || "", peso: 40 },
     { rotulo: "upgrade", texto: r.upgrade || "", peso: 38 },
+    { rotulo: "upgrade entregue", texto: upgradesEntregues(r).map((u) => u.texto).join(" · "), peso: 24 },
     { rotulo: "impacto", texto: r.impacto ? `impacto ${impactoDe(r).nome}` : "", peso: 30 },
     { rotulo: "esforço", texto: r.esforco ? `esforço ${esforcoDe(r).nome}` : "", peso: 30 },
     { rotulo: "marcador", texto: marcadores, peso: 26 },

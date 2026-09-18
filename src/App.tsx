@@ -57,6 +57,7 @@ import Investimentos from "./pages/Investimentos";
 import Flip from "./pages/investimentos/Flip";
 import Asaas from "./pages/Asaas";
 import Assinaturas from "./pages/Assinaturas";
+import Indicadores from "./pages/Indicadores";
 import Auditoria from "./pages/Auditoria";
 import Cartao from "./pages/Cartao";
 import CartaoOmie from "./pages/operacional/CartaoOmie";
@@ -276,6 +277,7 @@ function Rotas() {
               <Route path="/investimentos/flip" element={<Flip />} />
               <Route path="/asaas" element={<Asaas />} />
               <Route path="/assinaturas" element={<Assinaturas />} />
+              <Route path="/indicadores" element={<Indicadores />} />
               <Route path="/governanca/auditoria" element={<Auditoria />} />
               <Route path="/governanca/cartao" element={<Cartao />} />
               <Route path="/governanca/cac" element={<PainelCAC />} />

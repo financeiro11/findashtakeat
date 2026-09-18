@@ -145,8 +145,33 @@ export const GUIA: readonly Verbete[] = [
     quemUsa: "Diretoria, comercial e financeiro.",
     cuidados: [
       "No Churn, a base de comparação do mês M é o MRR de M−1. Comparar com o próprio mês infla ou desinfla a taxa.",
+      "O Churn vem do Takeat OS desde 18/09/2026, não mais da planilha: número errado se corrige no OS e aparece no Hub na cópia diária das 6h. O OS não quebra o cancelamento por porte (P/M/G/GG) nem tem o setor Comercial, e a quantidade de clientes perdidos no Onboarding é estimada (% do OS × clientes da base), marcada com ≈.",
     ],
     termos: ["mrr", "recorrência", "churn", "carteira", "base de clientes", "cancelamento", "quantos clientes"],
+  },
+  {
+    rota: "/indicadores",
+    titulo: "Metas & Indicadores",
+    grupo: "Início",
+    capacidades: ["metricas"],
+    oQueE: "O orçado × realizado de cada canal de Aquisição (Inside Sales, Performance, Eventos, MGM…) e de Operação (Ativação, Sucesso, Suporte), lido do Takeat OS — o painel de indicadores que o comercial e a operação alimentam.",
+    quemUsa: "Diretoria, líderes comerciais e de operação.",
+    passos: [
+      "Escolha o departamento (Aquisição ou Operação) no alto da tela; a tela abre no último mês fechado, e as setas mudam o mês.",
+      "Os cartões do topo são os north stars do departamento; abaixo, um quadro por canal com realizado, meta e quanto da meta foi atingido.",
+      "Clique em qualquer indicador para ver os últimos 13 meses em gráfico e tabela. 'Semanal' mostra o realizado das últimas 8 semanas.",
+    ],
+    comoLer: [
+      "Verde é na meta, amarelo até 15% do lado errado, vermelho além disso. Churn, cancelamento, downsell, CAC, CPL e tempo de atendimento são melhores ABAIXO da meta; investimento é orçamento e fica sem cor.",
+      "O símbolo Σ marca indicador calculado a partir de outros. Quando o OS deixa um calculado vazio (CAC, LTV, TM MRR, Payback, totais), o Hub calcula com a fórmula do próprio OS e marca o número: 'Hub' é fórmula completa, 'parcial' é soma só dos canais que lançaram (o hover diz quem faltou), '≈' é estimado.",
+      "CAC consolidado no Hub = custos do OS menos as equipes Sucesso, Suporte e Liderança OPS, mais o investimento em ADS, dividido pelos novos clientes. O CAC MKT é estimado: Investimentos + Comissões + ADS.",
+    ],
+    cuidados: [
+      "O Hub não edita nada aqui: meta e realizado são lançados no Takeat OS e copiados para o Hub todo dia às 6h. Número errado se corrige no OS.",
+      "Margem de Contribuição e LTV são marcados como sensíveis e só aparecem para quem também vê as Demonstrações.",
+    ],
+    termos: ["meta", "metas", "indicadores", "kpi", "north star", "takeat os", "leads", "conversão", "novo mrr",
+             "novos clientes", "atingimento", "canal", "inside sales", "field sales", "ativação", "csat", "comitê"],
   },
   {
     rota: "/operacional/parceiros",

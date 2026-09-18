@@ -458,6 +458,9 @@ const PORTAO: ReadonlyArray<readonly [string, Exigencia]> = [
   ["/caixa", "tesouraria"],
   ["/asaas", "tesouraria"],
   ["/assinaturas", "metricas"],
+  /* Espelho do Takeat OS. A RLS das `os_*` pede a mesma capacidade, e as linhas
+     `sensivel` (Margem de Contribuição, LTV) pedem também `demonstracoes`. */
+  ["/indicadores", "metricas"],
   ["/dashboard-legacy", "metricas"],
   ["/operacional/parceiros", "parceiros"],
 

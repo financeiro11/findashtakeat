@@ -70,7 +70,15 @@ export async function requireUser(
   if (!token) throw new AuthError("Não autenticado.");
 
   // Chamada de sistema com a service role key (cron/back-office) — permitida.
-  if (jwtRole(token) === "service_role") {
+  // A COMPARAÇÃO DIRETA vem antes da claim: uma função chamando outra manda o
+  // `SUPABASE_SERVICE_ROLE_KEY` do próprio ambiente, e quando ele não é um JWT
+  // legível (chave no formato novo `sb_secret_…`) a claim sai nula e o sistema
+  // recusava a si mesmo. Em 18/09/2026 foi assim que a Caixa de notas deixou de
+  // ler na hora: a `nota-caixa` chamava a `nota-ler-arquivo` e a
+  // `omie-anexar-comprovante`, as duas respondiam "Não autenticado" com 200, e
+  // o arquivo ficava "lendo" até o cron passar.
+  const chaveServico = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  if ((chaveServico && token === chaveServico) || jwtRole(token) === "service_role") {
     return {
       userId: null, cargo: "", perfil: "", isService: true,
       capacidades: [], pode: () => true,

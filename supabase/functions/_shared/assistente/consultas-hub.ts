@@ -6,6 +6,7 @@
 // famílias obedecem ao mesmo contrato `Resultado`, então o orquestrador não distingue.
 
 import { brl, fecha, Numero, pct, Resultado } from "./base.ts";
+import { sentidoDe } from "../indicadores-os-calculo.ts";
 import {
   Competencia, competenciaCurta, competenciaExtenso, estruturar, mesesFechados,
   montarColuna, ordenar, valorDe, valorDoNo,
@@ -743,6 +744,132 @@ export async function snapshotKpis(
   ].join("\n");
 
   return { consulta: tabela, ok: true, nivel: "consultado", numeros, paraModelo, avisos: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Metas & Indicadores do Takeat OS
+// ---------------------------------------------------------------------------
+
+type LinhaOS = {
+  departamento: string | null; canal: string | null; indicador: string | null; unidade: string | null;
+  sensivel: boolean | null; menor_e_melhor: boolean | null; competencia: string | null;
+  orcado: number | null; realizado: number | null; origem: string | null; nota: string | null;
+};
+
+const MES_EXTENSO = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto",
+  "setembro", "outubro", "novembro", "dezembro"];
+
+function valorNaUnidade(v: number, unidade: string | null): string {
+  if (unidade === "BRL") return brl(v);
+  if (unidade === "percent") return pct(v);
+  return v.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+}
+
+const SELO_ORIGEM: Record<string, string> = {
+  hub: " [calculado pelo Hub]", hub_parcial: " [PARCIAL — calculado pelo Hub]", hub_estimado: " [ESTIMADO pelo Hub]",
+};
+
+/**
+ * Orçado × realizado de cada canal do Takeat OS num mês, lido de `os_painel_completo` — o
+ * número do OS quando existe e, quando o OS deixou vazio, o que o Hub calculou com a
+ * fórmula do próprio OS (com a origem). É a mesma leitura da tela /indicadores.
+ *
+ * O Assistente roda com service role: a RLS que esconde as linhas `sensivel` (Margem de
+ * Contribuição, LTV) de quem não vê as Demonstrações NÃO vale aqui. Quem decide é
+ * `veSensivel`, vindo das capacidades de quem perguntou.
+ */
+export async function indicadoresOS(
+  supabase: { from: (t: string) => any },
+  pedida: { ano: number; mes: number } | null,
+  veSensivel: boolean,
+  departamento?: string | null,
+): Promise<Resultado> {
+  const vazio = (aviso: string): Resultado => ({ consulta: "indicadores_os", ok: false, numeros: [], paraModelo: "", avisos: [aviso] });
+
+  let competencia: string;
+  if (pedida) {
+    competencia = `${pedida.ano}-${String(pedida.mes).padStart(2, "0")}-01`;
+  } else {
+    // Sem mês na pergunta: o último mês FECHADO com realizado. O mês corrente está sempre
+    // parcial no OS (em 18/09 o Inside Sales de setembro mostrava zero).
+    const hoje = new Date();
+    const atual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
+    const { data } = await supabase.from("os_painel_completo").select("competencia")
+      .not("realizado", "is", null).lt("competencia", atual)
+      .order("competencia", { ascending: false }).limit(1);
+    if (!data?.length) return vazio("Sem indicadores do Takeat OS copiados para o Hub.");
+    competencia = String(data[0].competencia).slice(0, 10);
+  }
+
+  let q = supabase.from("os_painel_completo")
+    .select("departamento,canal,indicador,unidade,sensivel,menor_e_melhor,competencia,orcado,realizado,origem,nota")
+    .eq("competencia", competencia);
+  if (departamento) q = q.eq("departamento", departamento);
+  const { data, error } = await q;
+  if (error) return vazio(`Falha ao ler os indicadores do OS: ${error.message}`);
+
+  const linhas = ((data ?? []) as LinhaOS[])
+    .filter((l) => l.realizado != null || (l.orcado ?? 0) > 0)
+    .filter((l) => veSensivel || !l.sensivel);
+  if (!linhas.length) return vazio(`O Takeat OS não tem indicador lançado para ${competencia.slice(0, 7)}.`);
+
+  const [ano, mes] = competencia.split("-").map(Number);
+  const rotuloMes = `${MES_EXTENSO[mes - 1]} de ${ano}`;
+  const numeros: Numero[] = [];
+  const texto: string[] = [];
+  const porCanal = new Map<string, LinhaOS[]>();
+  for (const l of linhas) {
+    const k = `${l.departamento} › ${l.canal}`;
+    if (!porCanal.has(k)) porCanal.set(k, []);
+    porCanal.get(k)!.push(l);
+  }
+
+  let parciais = 0;
+  for (const [canal, itens] of porCanal) {
+    texto.push(`${canal}:`);
+    for (const l of itens) {
+      const sentido = sentidoDe({ indicador: l.indicador ?? "", menor_e_melhor: l.menor_e_melhor });
+      const selo = SELO_ORIGEM[l.origem ?? ""] ?? "";
+      if (l.origem === "hub_parcial" || l.origem === "hub_estimado") parciais++;
+      const real = l.realizado == null ? "sem realizado" : valorNaUnidade(l.realizado, l.unidade);
+      const temMeta = l.orcado != null && l.orcado > 0;
+      const ating = temMeta && l.realizado != null ? (l.realizado / (l.orcado as number)) * 100 : null;
+      const leitura = ating == null || sentido === "neutro" ? ""
+        : sentido === "menor"
+          ? ` · ${ating <= 100 ? "DENTRO da meta" : "ACIMA da meta (ruim — menor é melhor)"}`
+          : ` · ${ating >= 100 ? "bateu a meta" : "abaixo da meta"}`;
+      const meta = temMeta ? ` · meta ${valorNaUnidade(l.orcado as number, l.unidade)}` +
+        (ating != null ? ` (${ating.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}% da meta)` : "") : "";
+      texto.push(`  ${l.indicador}: ${real}${meta}${leitura}${selo}${l.nota ? ` — ${l.nota}` : ""}`);
+      if (l.realizado != null) {
+        numeros.push({
+          rotulo: `${canal} · ${l.indicador}${selo}`,
+          valor: l.realizado,
+          formatado: valorNaUnidade(l.realizado, l.unidade),
+          fonte: "Takeat OS",
+          competencia: rotuloMes,
+        });
+      }
+    }
+  }
+
+  const paraModelo = [
+    `METAS & INDICADORES DO TAKEAT OS — ${rotuloMes}${departamento ? ` · ${departamento}` : ""}`,
+    ...texto,
+    "",
+    "Os números vêm do Takeat OS, o painel que o comercial e a operação alimentam (copiado para",
+    "o Hub todo dia às 6h). O que está marcado [calculado pelo Hub] o OS deixou vazio e o Hub",
+    "calculou com a fórmula do próprio OS; [PARCIAL] soma só os canais que lançaram — diga",
+    "quais faltaram; [ESTIMADO] é estimativa. Sempre diga isso junto com o número.",
+    "Churn, cancelamento, downsell, CAC, CPL, payback e tempos de atendimento são melhores",
+    "ABAIXO da meta: '% da meta' acima de 100 nesses é resultado RUIM. Use a leitura escrita",
+    "em cada linha, não reinterprete.",
+    veSensivel ? "" : "Margem de Contribuição e LTV não aparecem: são sensíveis e esta pessoa não vê as Demonstrações.",
+  ].filter(Boolean).join("\n");
+
+  const avisos = parciais ? [`${parciais} número(s) de ${rotuloMes} são parciais ou estimados pelo Hub.`] : [];
+  if (!pedida) avisos.push(`Usei ${rotuloMes}, o último mês fechado com lançamento no OS.`);
+  return { consulta: "indicadores_os", ok: true, nivel: "consultado", numeros, paraModelo, avisos };
 }
 
 // ---------------------------------------------------------------------------

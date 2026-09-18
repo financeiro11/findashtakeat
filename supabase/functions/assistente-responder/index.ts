@@ -38,7 +38,7 @@ import {
 } from "../_shared/assistente/consultas.ts";
 import {
   briefingDoDia, contrapartesComparadas, dreCompleta, orcamentoPorArea, pagamentosPrevistos,
-  panoramaDFC, snapshotKpis,
+  indicadoresOS, panoramaDFC, snapshotKpis,
 } from "../_shared/assistente/consultas-hub.ts";
 import { cartaoFatura } from "../_shared/assistente/consultas-cartao.ts";
 import { comoFazer } from "../_shared/assistente/consultas-guia.ts";
@@ -52,6 +52,7 @@ const CONSULTAS = [
   "lancamentos_da_rubrica", "radar", "dfc_do_mes", "orcamento_por_area",
   "pagamentos_previstos", "assinaturas", "churn", "investimentos", "briefing",
   "dre_completa", "contrapartes", "cartao_fatura", "explorar", "como_fazer",
+  "indicadores_os",
 ] as const;
 type NomeConsulta = typeof CONSULTAS[number];
 
@@ -87,6 +88,7 @@ const CAPACIDADE_DA_CONSULTA: Record<string, string | null> = {
   orcamento_por_area: "orcamento",
   assinaturas: "metricas",
   churn: "metricas",
+  indicadores_os: "metricas",
   investimentos: "societario",
   cartao_fatura: "conciliacao",
   // "explorar" é a única cuja porta depende do PARÂMETRO: a capacidade sai da fonte pedida,
@@ -154,6 +156,12 @@ Consultas disponíveis:
 - "assinaturas": KPIs da base de assinantes (MRR, carteira, mix). Para "como está a base
   de clientes", "MRR", "assinaturas".
 - "churn": KPIs de cancelamento. Para "churn", "cancelamentos", "perdemos clientes".
+- "indicadores_os": METAS & INDICADORES do Takeat OS — orçado × realizado de cada canal de
+  Aquisição (Inside Sales, Performance, Eventos, MGM, Field Sales, Franquias, Consultores,
+  Contadores…) e de Operação (Ativação, Sucesso, Suporte), mais CAC, LTV, LTV/CAC, payback,
+  TM MRR, novos clientes, novo MRR, leads, conversão, CPL, CSAT e tempo de atendimento.
+  Aceita "ano" e "mes". Para "batemos a meta", "como foi o Inside Sales", "qual o CAC",
+  "LTV/CAC", "quantos leads", "novo MRR por canal", "north star", "meta do comercial".
 - "investimentos": posição das entidades de investimento (Takeat LTD/LLC).
 - "briefing": o briefing diário — agenda, compromissos, e-mails e notícias do dia. Para
   "o que tenho hoje", "minha agenda", "tenho reunião", "quais e-mails chegaram".
@@ -623,6 +631,10 @@ Deno.serve(async (req) => {
           return await snapshotKpis(supabase, "assinaturas_snapshot", "Assinaturas");
         case "churn":
           return await snapshotKpis(supabase, "churn_snapshot", "Churn");
+        /* Margem de Contribuição e LTV são `sensivel` no OS: a RLS esconde de quem não vê as
+           Demonstrações, mas aqui roda service role — quem recorta é a capacidade. */
+        case "indicadores_os":
+          return await indicadoresOS(supabase, pedida, caller.isService || caller.pode("demonstracoes"));
         case "investimentos":
           return await snapshotKpis(supabase, "investimentos_snapshot", "Investimentos");
         case "briefing":

@@ -120,6 +120,12 @@ const sinalDe = (n: number | null | undefined) =>
 
 type Blob = { rows: Record<string, unknown>[]; columns: string[] };
 
+/** Um indicador do Takeat OS num mês, com a origem (os / hub / hub_parcial / hub_estimado). */
+type PontoOS = { realizado: number | null; orcado: number | null; origem: string | null; nota: string | null };
+
+/** Os indicadores do Consolidado de Aquisição que a fileira do Resumo mostra. */
+const INDICADORES_AQUISICAO = ["Novos Clientes Total", "Novo MRR Total", "CAC", "LTV/CAC", "CAC Payback"];
+
 type Carteira = {
   mix: { nivel: string; clientes: number; mrr: number; tm: number }[];
   clientes: number;
@@ -250,6 +256,17 @@ const FILEIRAS: Record<string, { rotulo: string; itens: Record<string, string> }
       caixa: "Caixa hoje e runway",
       clientes: "Clientes ativos",
       churn: "Churn do mês",
+    },
+  },
+  /* Do Takeat OS (os_painel_completo): o que o OS lançou e, onde ele deixou vazio, o
+     que o Hub calculou com a fórmula do próprio OS — com o selo dizendo qual. */
+  "resumo.kpis-aquisicao": {
+    rotulo: "KPIs · aquisição (Takeat OS)",
+    itens: {
+      novos: "Novos clientes",
+      cac: "CAC",
+      ltvcac: "LTV/CAC",
+      payback: "CAC Payback",
     },
   },
   "caixa.kpis": {
@@ -729,6 +746,8 @@ export default function RevisaoMes() {
      com a DRE de junho seria comparar base de agosto com receita de junho. */
   const [carteiras, setCarteiras] = useState<Map<string, Carteira>>(new Map());
   const [churns, setChurns] = useState<Map<string, ChurnMes>>(new Map());
+  /* "AAAA-MM" → indicador do Consolidado de Aquisição do Takeat OS. */
+  const [aquisicao, setAquisicao] = useState<Map<string, Map<string, PontoOS>>>(new Map());
   const [justificativas, setJustificativas] = useState<Map<string, string>>(new Map());
   const [revisao, setRevisao] = useState<RevisaoRow | null>(null);
 
@@ -820,7 +839,7 @@ export default function RevisaoMes() {
   /* ---------------------------- carga ---------------------------- */
   const carregar = useCallback(async () => {
     setCarregando(true);
-    const [dreRes, dfcRes, travasRes, bpsRes, caixaRes, assinRes, churnRes] = await Promise.all([
+    const [dreRes, dfcRes, travasRes, bpsRes, caixaRes, assinRes, churnRes, osRes] = await Promise.all([
       sb.from("demonstracoes_contabeis").select("dados")
         .eq("tipo", "dre").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
       sb.from("demonstracoes_contabeis").select("dados")
@@ -833,6 +852,11 @@ export default function RevisaoMes() {
         .order("competencia", { ascending: true }),
       sb.from("churn_snapshot").select("competencia,mes_label,dados")
         .order("competencia", { ascending: true }),
+      /* A view junta o OS com o que o Hub calculou; a RLS de quem lê vale (LTV/CAC e
+         Payback dependem da Margem, que é sensível, e somem para quem não vê a DRE). */
+      sb.from("os_painel_completo").select("indicador,competencia,realizado,orcado,origem,nota")
+        .eq("departamento", "Aquisição").eq("canal", "Consolidado")
+        .in("indicador", INDICADORES_AQUISICAO).not("competencia", "is", null),
     ]);
 
     setDre(lerBlobMensal(dreRes?.data?.dados));
@@ -901,6 +925,18 @@ export default function RevisaoMes() {
       });
     }
     setChurns(porChurn);
+
+    const porMesOS = new Map<string, Map<string, PontoOS>>();
+    for (const r of ((osRes?.data ?? []) as (PontoOS & { indicador: string; competencia: string })[])) {
+      const k = String(r.competencia).slice(0, 7);
+      if (!porMesOS.has(k)) porMesOS.set(k, new Map());
+      porMesOS.get(k)!.set(r.indicador, {
+        realizado: r.realizado == null ? null : Number(r.realizado),
+        orcado: r.orcado == null ? null : Number(r.orcado),
+        origem: r.origem, nota: r.nota,
+      });
+    }
+    setAquisicao(porMesOS);
 
     setCarregando(false);
   }, []);
@@ -1013,6 +1049,9 @@ export default function RevisaoMes() {
   const carteiraMes = useMemo(() => noMaisRecenteAte(carteiras, mes), [carteiras, mes]);
   const carteiraAnt = useMemo(() => noMaisRecenteAte(carteiras, mesAnterior), [carteiras, mesAnterior]);
   const churnMes = useMemo(() => noMaisRecenteAte(churns, mes), [churns, mes]);
+  // Aquisição é do mês EXATO: CAC de outro mês ao lado da DRE deste enganaria.
+  const osMes = useMemo(() => (mes ? aquisicao.get(competenciaDe(mes) ?? "") ?? null : null), [aquisicao, mes]);
+  const osAnt = useMemo(() => (mesAnterior ? aquisicao.get(competenciaDe(mesAnterior) ?? "") ?? null : null), [aquisicao, mesAnterior]);
   const churnAnt = useMemo(() => noMaisRecenteAte(churns, mesAnterior), [churns, mesAnterior]);
   /** A carteira exibida é de outro mês que não o da reunião? */
   const carteiraDefasada = !!mes && !!carteiraMes.chave && carteiraMes.chave !== competenciaDe(mes);
@@ -1996,6 +2035,44 @@ export default function RevisaoMes() {
           ]} />
         </Kpi>
       </div>
+
+      {osMes && (
+        <div key="kpis-aquisicao" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {([
+            { key: "novos", ind: "Novos Clientes Total", eyebrow: "Novos clientes", fmt: (v: number) => inteiro(v), menor: false,
+              sub: () => { const m = osMes.get("Novo MRR Total"); return m?.realizado != null ? <>{num(m.realizado)} de novo MRR</> : null; } },
+            { key: "cac", ind: "CAC", eyebrow: "CAC", fmt: (v: number) => num(v), menor: true, sub: () => null },
+            { key: "ltvcac", ind: "LTV/CAC", eyebrow: "LTV/CAC", fmt: (v: number) => `${v.toFixed(2).replace(".", ",")}×`, menor: false, sub: () => null },
+            { key: "payback", ind: "CAC Payback", eyebrow: "CAC Payback", fmt: (v: number) => `${v.toFixed(1).replace(".", ",")} meses`, menor: true, sub: () => null },
+          ] as const).map((k) => {
+            const p = osMes.get(k.ind);
+            const a = osAnt?.get(k.ind);
+            const v = p?.realizado ?? null;
+            const selo = p?.origem && p.origem !== "os"
+              ? (p.origem === "hub_parcial" ? "parcial" : p.origem === "hub_estimado" ? "≈" : "Hub") : null;
+            return (
+              <Kpi key={k.key} eyebrow={<>{k.eyebrow}{selo && (
+                <span className="ml-1.5 rounded bg-muted px-1 text-[9px] font-semibold normal-case tracking-normal text-muted-foreground"
+                  title={p?.nota ?? "Calculado pelo Hub com a fórmula do Takeat OS"}>{selo}</span>
+              )}</>} valor={v == null ? "—" : k.fmt(v)}>
+                {k.sub() && <div className="num -mt-1 text-[12px] text-muted-foreground">{k.sub()}</div>}
+                <Comparativos itens={[
+                  {
+                    rotulo: "vs mês ant.",
+                    texto: v != null && a?.realizado != null ? `${v - a.realizado >= 0 ? "+" : "−"}${k.fmt(Math.abs(v - a.realizado))}` : "—",
+                    bom: v != null && a?.realizado != null ? (k.menor ? v <= a.realizado : v >= a.realizado) : null,
+                  },
+                  {
+                    rotulo: "vs meta OS",
+                    texto: v != null && (p?.orcado ?? 0) > 0 ? k.fmt(p!.orcado!) : "—",
+                    bom: v != null && (p?.orcado ?? 0) > 0 ? (k.menor ? v <= p!.orcado! : v >= p!.orcado!) : null,
+                  },
+                ]} />
+              </Kpi>
+            );
+          })}
+        </div>
+      )}
 
       {carteiraDefasada && (
         <p key="aviso-carteira" className="flex items-start gap-1.5 text-[10.5px] leading-snug text-muted-foreground/80">

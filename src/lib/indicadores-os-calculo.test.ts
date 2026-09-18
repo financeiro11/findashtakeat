@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  avaliar, completarMensal, ehSomaPura, parseFormula, refsDe,
+  avaliar, completarMensal, ehSomaPura, idsSensiveis, parseFormula, refsDe,
   type AssinaturaOS, type CustoOS,
 } from "./indicadores-os-calculo";
 import type { IndicadorOS, LinhaMensalOS } from "./indicadores-os";
@@ -95,6 +95,20 @@ const assinaturas: AssinaturaOS[] = [
 
 const saida = completarMensal(indicadores, linhas, custos, assinaturas);
 const de = (id: string) => saida.find((x) => x.indicator_id === id && x.competencia === AGO)!;
+
+describe("idsSensiveis", () => {
+  it("herda a marca por dependência, em cadeia", () => {
+    const LTV_CAC = U(30);
+    const comDerivado = [...indicadores, f(LTV_CAC, "Consolidado", "LTV/CAC", `[${LTV}] / [${CAC}]`), ];
+    const sens = idsSensiveis(comDerivado);
+    expect(sens.has(MARGEM)).toBe(true);        // marcado pelo OS
+    expect(sens.has(LTV)).toBe(true);           // usa Margem
+    expect(sens.has(PAYBACK)).toBe(true);       // usa Margem
+    expect(sens.has(LTV_CAC)).toBe(true);       // usa LTV, que usa Margem
+    expect(sens.has(CAC)).toBe(false);
+    expect(sens.has(TM)).toBe(false);
+  });
+});
 
 describe("completarMensal", () => {
   it("nunca sobrescreve o OS", () => {

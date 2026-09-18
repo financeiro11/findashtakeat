@@ -21,6 +21,7 @@ import {
   type SuspeitaDepartamento, type MarcaDepartamento,
 } from "@/lib/cac";
 import { ConferenciaDRE } from "./cac/ConferenciaDRE";
+import { ConferenciaOS } from "./cac/ConferenciaOS";
 import { DepartamentoForaDoPadrao } from "./cac/DepartamentoForaDoPadrao";
 import { CorrigirNoOmie } from "./cac/CorrigirNoOmie";
 import { runOmieSync } from "@/lib/omieSync";
@@ -445,6 +446,8 @@ export default function PainelCAC() {
           )}
 
           <ConferenciaDRE ano={ano} rows={conferencia} mesPadrao={fechado >= 0 ? fechado + 1 : 12} />
+          {/* Painel é o oficial; o OS tem a mesma matriz e é de lá que sai o CAC de Metas & Indicadores. */}
+          <ConferenciaOS ano={ano} rows={rows} mesPadrao={fechado >= 0 ? fechado + 1 : 12} />
         </TabsContent>
 
         {vejoAFolha && (

@@ -3,8 +3,6 @@
 // 20260918140000). Fica fora do componente para ser testada: o farol é a parte da tela que
 // pode mentir, e mente em silêncio.
 
-import { normalize } from "./normalize";
-
 export type Unidade = "BRL" | "count" | "percent" | string;
 
 export type IndicadorOS = {
@@ -51,24 +49,10 @@ export type LinhaSemanalOS = {
 
 /* ------------------------------ sentido ------------------------------ */
 
-export type Sentido = "maior" | "menor" | "neutro";
-
-// O OS só marca `menor_e_melhor` nos dois tempos do Suporte (18/09/2026). Churn,
-// cancelamento, downsell, CAC e CPL vêm sem a marca, e o `atingimento_pct` do próprio OS
-// sai como "230%" para um churn de 2,3% contra meta de 1% — pintado pelo sentido padrão,
-// o pior resultado do mês ficaria verde. A regra por nome cobre isso até o OS corrigir a
-// marca; a marca, quando vier, vale sozinha.
-const MENOR_POR_NOME = /churn|cancelad|downsell|\bcac\b|\bcpl\b|payback|tempo|ratio volume/;
-// Investimento é orçamento a gastar, não meta a bater: passar do orçado não é "bom".
-const NEUTRO_POR_NOME = /^investimento/;
-
-export function sentidoDe(ind: Pick<IndicadorOS, "indicador" | "menor_e_melhor">): Sentido {
-  if (ind.menor_e_melhor) return "menor";
-  const nome = normalize(ind.indicador ?? "").toLowerCase();
-  if (NEUTRO_POR_NOME.test(nome)) return "neutro";
-  if (MENOR_POR_NOME.test(nome)) return "menor";
-  return "maior";
-}
+// A regra do sentido (churn, CAC e CPL são melhores ABAIXO da meta) mora em _shared, junto
+// do cálculo: o Assistente lê o farol pelo mesmo critério da tela.
+export { sentidoDe, type Sentido } from "../../supabase/functions/_shared/indicadores-os-calculo.ts";
+import { sentidoDe, type Sentido } from "../../supabase/functions/_shared/indicadores-os-calculo.ts";
 
 /* ------------------------------ atingimento e farol ------------------------------ */
 

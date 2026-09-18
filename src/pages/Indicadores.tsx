@@ -75,6 +75,8 @@ export default function Indicadores() {
             .order("ordem").range(de, ate)),
           lerTudo<LinhaMensalOS>((de, ate) => sb.from("os_painel_mensal")
             .select("indicator_id,ano,mes,competencia,orcado,realizado")
+            // mes = 13 é o total anual do OS, sem competência: não é mês e quebraria a ordenação.
+            .not("competencia", "is", null)
             .order("competencia").order("indicator_id").range(de, ate)),
           lerTudo<CustoOS>((de, ate) => sb.from("os_custos")
             .select("competencia,grupo,categoria,valor").order("competencia").range(de, ate)),

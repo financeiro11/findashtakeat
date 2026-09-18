@@ -24,11 +24,9 @@ export type IndicadorOS = {
   formula?: string | null;
 };
 
-/**
- * De onde veio o realizado. `os` = lançado ou calculado pelo próprio OS; o resto foi o Hub
- * que calculou porque o OS deixou vazio (ver ./indicadores-os-calculo).
- */
-export type Origem = "os" | "hub" | "hub_parcial" | "hub_estimado";
+/** De onde veio o realizado — definido junto do cálculo, em _shared. */
+export type { Origem } from "../../supabase/functions/_shared/indicadores-os-calculo.ts";
+import type { Origem } from "../../supabase/functions/_shared/indicadores-os-calculo.ts";
 
 export type LinhaMensalOS = {
   indicator_id: string;
@@ -182,7 +180,8 @@ export function montarPainel(
   competenciaAnterior: string | null,
 ): BlocoCanal[] {
   const chave = (id: string, c: string) => `${id}|${c.slice(0, 10)}`;
-  const porChave = new Map(linhas.map((l) => [chave(l.indicator_id, l.competencia), l]));
+  // Linha sem competência é o total anual do OS (mes = 13): não é mês, fica de fora.
+  const porChave = new Map(linhas.filter((l) => l.competencia).map((l) => [chave(l.indicator_id, l.competencia), l]));
 
   const doDepto = indicadores
     .filter((i) => i.departamento === departamento && i.ativo !== false && i.no_painel !== false)

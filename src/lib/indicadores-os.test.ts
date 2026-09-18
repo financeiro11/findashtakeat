@@ -111,6 +111,11 @@ describe("montarPainel", () => {
     expect(Math.round(a1.pct!)).toBe(91);
   });
 
+  it("linha de total anual (mes 13, competência nula) não derruba o painel", () => {
+    const anual = { indicator_id: "a1", ano: 2026, mes: 13, competencia: null as unknown as string, orcado: 1, realizado: null };
+    expect(() => montarPainel(inds, [...linhas, anual], "Aquisição", "2026-08-01", null)).not.toThrow();
+  });
+
   it("consolidado sem realizado aparece como sem dado, não some", () => {
     // Ago/26 real: o Novo MRR Total veio null porque um canal (Comunidade) estava null.
     const blocos = montarPainel(inds, linhas, "Aquisição", "2026-08-01", null);

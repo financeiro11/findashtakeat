@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  avaliar, completarMensal, ehSomaPura, escrever, explicar, idsSensiveis, parseFormula, refsDe,
+  avaliar, completarMensal, ehSomaPura, escrever, explicar, idsSensiveis, inconsistenciasDoMes, parseFormula, refsDe,
+  textoParaEnviar,
   type AssinaturaOS, type CustoOS,
 } from "./indicadores-os-calculo";
 import type { IndicadorOS, LinhaMensalOS } from "./indicadores-os";
@@ -130,15 +131,36 @@ describe("completarMensal", () => {
     expect(ok.find((x) => x.indicator_id === FS_CAC)).toMatchObject({ origem: "os" });
   });
 
-  it("fórmula que o OS entregou errada (divisão truncada) é recalculada, com o valor do OS na nota", () => {
-    // Taxa de Engajamento: 30 ÷ 3000 × 100 = 1; o OS, dividindo inteiros, grava 0.
-    const trunc = completarMensal(indicadores, [...linhas.filter((x) => x.indicator_id !== TAXA_ENG), l(TAXA_ENG, 0)], custos, assinaturas);
-    const t = trunc.find((x) => x.indicator_id === TAXA_ENG)!;
-    expect(t.realizado).toBeCloseTo(1);
-    expect(t.origem).toBe("hub");
-    expect(t.nota).toContain("O OS informou 0");
-    const e = explicar(TAXA_ENG, AGO, indicadores, trunc, custos, assinaturas);
-    expect(e.observacoes[0]).toContain("O OS informou 0");
+  it("fórmula que o OS entregou errada NÃO é trocada: vira inconsistência para o time do OS", () => {
+    // Taxa de Conversão real: 217 ÷ 3308 × 100 = 6,56; o OS, dividindo inteiros, grava 0.
+    const TX = U(40), LEADS = U(41);
+    const inds = [...indicadores, ind(LEADS, "Inside Sales", "Leads", { unidade: "count" }),
+      f(TX, "Inside Sales", "Taxa de Conversão", `( [${NOV_IS}] / [${LEADS}] ) * 100`, { unidade: "percent" })];
+    const base = [...linhas, l(LEADS, 3308), l(TX, 0)];
+    const saidaTx = completarMensal(inds, base, custos, assinaturas);
+    expect(saidaTx.find((x) => x.indicator_id === TX)).toMatchObject({ realizado: 0, origem: "os" });
+
+    const inc = inconsistenciasDoMes(inds, saidaTx, custos, AGO);
+    const d = inc.find((x) => x.tipo === "formula_divergente" && x.indicadorId === TX)!;
+    expect(d.texto).toContain("Inside Sales › Taxa de Conversão");
+    expect(d.texto).toContain("6,56");
+    expect(d.texto).toContain("divisão entre inteiros");
+    // A memória de cálculo acusa a mesma coisa.
+    expect(explicar(TX, AGO, inds, saidaTx, custos, assinaturas).observacoes.join(" ")).toContain("mas a fórmula dele");
+  });
+
+  it("inconsistências do mês: o que o OS não calcula, canal que não lançou, marca de sentido, só %", () => {
+    const inc = inconsistenciasDoMes(
+      [...indicadores, ind(U(50), "Sucesso", "% Customer Churn", { departamento: "Operação", unidade: "percent", menor_e_melhor: null } as never)],
+      saida, custos, AGO);
+    const de = (t: string) => inc.filter((x) => x.tipo === t);
+    expect(de("nao_calculado")[0].texto).toContain("Novo MRR Total");
+    expect(de("canal_sem_lancamento").map((x) => x.texto).join(" ")).toContain("Comunidade não lançou Novo MRR, Novos Clientes");
+    expect(de("sentido")[0].texto).toContain("% Customer Churn");
+    expect(de("sem_quantidade")[0].indicadorId).toBe(AT_Q);
+    // Nenhuma divergência inventada: o que o Hub preencheu não é conferido contra si mesmo.
+    expect(de("formula_divergente")).toHaveLength(0);
+    expect(textoParaEnviar(inc, "Ago 26")).toMatch(/^Inconsistências no Takeat OS — Ago 26/);
   });
 
   it("soma com canal faltando sai parcial, dizendo quem faltou, e mantém o orçado", () => {

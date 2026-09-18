@@ -6,14 +6,14 @@
 // faz: o sentido do farol (churn acima da meta é vermelho — ver lib/indicadores-os) e a
 // leitura lado a lado com o resto do financeiro.
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, createContext, useContext, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, Tooltip as RTooltip, CartesianGrid,
 } from "recharts";
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Loader2, Star, Sigma, ArrowUpRight, ArrowDownRight } from "lucide-react";
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Loader2, Star, Sigma, ArrowUpRight, ArrowDownRight } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { comValorExato } from "@/components/ValorExato";
 import {
@@ -21,7 +21,12 @@ import {
   montarPainel, resumoFarois, mesPadrao, separarConsolidado, serieAte, fmtValorStr, fmtValorCurtoStr, fmtPctAtingStr, farol, atingimento, sentidoDe,
   type Origem,
 } from "@/lib/indicadores-os";
-import { completarMensal, explicar, type CustoOS, type AssinaturaOS, type Explicacao } from "@/lib/indicadores-os-calculo";
+import {
+  completarMensal, explicar, inconsistenciasDoMes, textoParaEnviar, TITULO_INCONSISTENCIA,
+  type CustoOS, type AssinaturaOS, type Explicacao, type Inconsistencia,
+} from "@/lib/indicadores-os-calculo";
+import { conferirComOS } from "@/lib/cac-os";
+import type { PainelRow } from "@/lib/cac";
 
 const sb = supabase as any;
 const LOTE = 1000;
@@ -52,12 +57,29 @@ const FAROL: Record<Farol, { texto: string; barra: string; rotulo: string }> = {
   neutro:   { texto: "text-muted-foreground", barra: "bg-muted-foreground/40", rotulo: "orçamento" },
 };
 
+/* Indicador → o que o Hub achou de errado nele no OS (vai no ⚠ de cada número). */
+const AlertasOS = createContext<Map<string, string>>(new Map());
+
+function AlertaOS({ id }: { id: string }) {
+  const texto = useContext(AlertasOS).get(id);
+  if (!texto) return null;
+  return (
+    <span title={`${texto} O Hub mostra o número do OS; esta inconsistência está na lista para o time do OS.`}
+      className="inline-flex shrink-0 text-warn" aria-label="Inconsistência no OS">
+      <AlertTriangle className="h-3.5 w-3.5" />
+    </span>
+  );
+}
+
 /* ================================ página ================================ */
 export default function Indicadores() {
   const [indicadores, setIndicadores] = useState<IndicadorOS[]>([]);
   const [mensalOS, setMensalOS] = useState<LinhaMensalOS[]>([]);
   const [custos, setCustos] = useState<CustoOS[]>([]);
   const [carteira, setCarteira] = useState<AssinaturaOS[]>([]);
+  /* O Painel CAC (Omie) é o oficial; a matriz de custos do OS é conferida contra ele. */
+  const [cacPainel, setCacPainel] = useState<{ ano: number; rows: PainelRow[] } | null>(null);
+  const [vendoInconsistencias, setVendoInconsistencias] = useState(false);
   const [semanal, setSemanal] = useState<LinhaSemanalOS[] | null>(null);
   const [sync, setSync] = useState<{ executado_em: string; ok: boolean; erro: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -132,6 +154,37 @@ export default function Indicadores() {
   const resumoConsolidado = resumoFarois([{ canal: "Consolidado", itens: [...destaques, ...demaisConsolidado] }]);
   const resumoCanais = resumoFarois(canais);
   const [abertos, setAbertos] = useState<Set<string>>(new Set());
+  const anoDoMes = competencia ? Number(competencia.slice(0, 4)) : null;
+  useEffect(() => {
+    if (!anoDoMes || cacPainel?.ano === anoDoMes) return;
+    sb.rpc("cac_painel", { p_ano: anoDoMes }).then(({ data, error }: { data: PainelRow[] | null; error: unknown }) => {
+      // Acessório: sem o Painel CAC, a lista segue sem os itens de custo.
+      setCacPainel({ ano: anoDoMes, rows: error ? [] : (data ?? []) });
+    });
+  }, [anoDoMes, cacPainel?.ano]);
+
+  const inconsistencias = useMemo<Inconsistencia[]>(() => {
+    if (!competencia) return [];
+    const itens = inconsistenciasDoMes(indicadores, mensal, custos, competencia, (v, u) => fmtValorStr(v, u ?? "count"));
+    if (cacPainel?.rows.length) {
+      const mes = Number(competencia.slice(5, 7));
+      for (const l of conferirComOS(cacPainel.rows, custos, cacPainel.ano, mes)) {
+        if (l.bate) continue;
+        itens.push({
+          tipo: "custo_divergente",
+          texto: `${l.grupo} › ${l.rotulo}: o OS tem ${l.os == null ? "nada lançado" : fmtValorStr(l.os, "BRL")}, ` +
+            `o Painel CAC (Omie) tem ${fmtValorStr(l.hub, "BRL")} — diferença de ${fmtValorStr(Math.abs(l.diferenca), "BRL")}. ` +
+            "Como o CAC do OS sai desta matriz, ele muda junto.",
+        });
+      }
+    }
+    return itens;
+  }, [competencia, indicadores, mensal, custos, cacPainel]);
+
+  const alertas = useMemo(() => new Map(
+    inconsistencias.filter((i) => i.indicadorId && i.tipo === "formula_divergente").map((i) => [i.indicadorId!, i.texto]),
+  ), [inconsistencias]);
+
   const alternarCanal = (c: string) =>
     setAbertos((a) => { const n = new Set(a); if (n.has(c)) n.delete(c); else n.add(c); return n; });
 
@@ -144,6 +197,7 @@ export default function Indicadores() {
   }
 
   return (
+    <AlertasOS.Provider value={alertas}>
     <div className="space-y-3.5 px-5 pb-7 pt-3.5">
       {/* ---------------- Cabeçalho ---------------- */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -206,6 +260,13 @@ export default function Indicadores() {
               </button>
             </div>
             <ResumoFarois resumo={resumoConsolidado} prefixo="Consolidado:" />
+            {inconsistencias.length > 0 && (
+              <button type="button" onClick={() => setVendoInconsistencias(true)}
+                className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg border border-warn/40 bg-warn-soft px-3 text-[12px] font-medium text-warn hover:bg-warn/20">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                {inconsistencias.length} {inconsistencias.length === 1 ? "inconsistência" : "inconsistências"} no OS
+              </button>
+            )}
           </div>
 
           {/* ---------------- Consolidado: o protagonista ---------------- */}
@@ -271,7 +332,10 @@ export default function Indicadores() {
 
       <MemoriaDeCalculo ind={aberto} competencia={competencia} indicadores={indicadores} linhas={mensal}
         custos={custos} carteira={carteira} onFechar={() => setAberto(null)} />
+      <ListaInconsistencias aberto={vendoInconsistencias} onFechar={() => setVendoInconsistencias(false)}
+        itens={inconsistencias} rotulo={competencia ? rotuloMes(competencia) : ""} />
     </div>
+    </AlertasOS.Provider>
   );
 }
 
@@ -374,6 +438,7 @@ function LinhaIndicador({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () =>
         <div className="flex items-center justify-end gap-1.5">
           <Variacao atual={i.realizado} anterior={i.anterior} sentido={i.sentido} />
           <SeloOrigem origem={i.origem} nota={i.nota} />
+          <AlertaOS id={i.ind.id} />
           <span className="font-medium text-foreground">{fmtValorStr(i.realizado, i.ind.unidade)}</span>
         </div>
       </td>
@@ -413,6 +478,7 @@ function CardDestaque({ item: i, serie, onAbrir }: {
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="eyebrow truncate">{i.ind.indicador}</span>
           <SeloOrigem origem={i.origem} nota={i.nota} />
+          <AlertaOS id={i.ind.id} />
         </div>
         <span className={cn("h-2 w-2 shrink-0 rounded-full", FAROL[i.farol].barra)} title={FAROL[i.farol].rotulo} />
       </div>
@@ -459,6 +525,7 @@ function TileConsolidado({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () =
           {comValorExato(i.realizado, fmtValorCurtoStr(i.realizado, u), { moeda: u === "BRL", casas: 2 })}
         </span>
         <SeloOrigem origem={i.origem} nota={i.nota} />
+        <AlertaOS id={i.ind.id} />
       </div>
       <div className="num text-[10.5px] text-muted-foreground">
         {(i.orcado ?? 0) > 0 ? <>meta {fmtValorCurtoStr(i.orcado, u)} · <span className={FAROL[i.farol].texto}>{fmtPctAtingStr(i.pct)}</span></> : "sem meta"}
@@ -472,6 +539,8 @@ function CanalRecolhivel({ bloco: b, aberto, onAlternar, onAbrir }: {
   bloco: BlocoCanal; aberto: boolean; onAlternar: () => void; onAbrir: (i: IndicadorOS) => void;
 }) {
   const ns = b.itens.find((i) => i.ind.north_star && i.realizado != null) ?? b.itens.find((i) => i.ind.north_star);
+  const alertas = useContext(AlertasOS);
+  const comAlerta = b.itens.filter((i) => alertas.has(i.ind.id)).length;
   return (
     <div>
       <button type="button" onClick={onAlternar} aria-expanded={aberto}
@@ -479,6 +548,11 @@ function CanalRecolhivel({ bloco: b, aberto, onAlternar, onAbrir }: {
         <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", aberto && "rotate-90")} />
         <span className="w-36 shrink-0 truncate text-[12.5px] font-medium">{b.canal}</span>
         <FaroisDoCanal itens={b.itens} />
+        {comAlerta > 0 && (
+          <span className="inline-flex items-center gap-1 text-[11px] text-warn" title="Números deste canal que não batem com a fórmula do próprio OS">
+            <AlertTriangle className="h-3 w-3" /> {comAlerta}
+          </span>
+        )}
         {ns && (
           <span className="ml-auto flex min-w-0 items-baseline gap-1.5 text-[11.5px] text-muted-foreground">
             <Star className="h-3 w-3 shrink-0 self-center fill-primary/60 text-primary/60" aria-label="North star" />
@@ -567,6 +641,69 @@ function Semanal({
       </table>
       {!canais.length && <div className="p-6 text-center text-[12.5px] text-muted-foreground">Nenhum realizado semanal para {depto}.</div>}
     </div>
+  );
+}
+
+/* ------------------------------ inconsistências para o time do OS ------------------------------ */
+
+/**
+ * O que o Hub achou de errado no OS no mês, agrupado por tipo e pronto para copiar. O Hub
+ * NÃO corrige número do OS (a tela tem de bater com ele): quem corrige é o time do OS, e
+ * esta lista é o que o financeiro manda para eles.
+ */
+function ListaInconsistencias({ aberto, onFechar, itens, rotulo }: {
+  aberto: boolean; onFechar: () => void; itens: Inconsistencia[]; rotulo: string;
+}) {
+  const grupos = useMemo(() => {
+    const m = new Map<Inconsistencia["tipo"], Inconsistencia[]>();
+    for (const i of itens) { if (!m.has(i.tipo)) m.set(i.tipo, []); m.get(i.tipo)!.push(i); }
+    return [...m.entries()];
+  }, [itens]);
+
+  const copiar = async () => {
+    try {
+      await navigator.clipboard.writeText(textoParaEnviar(itens, rotulo));
+      toast.success("Copiado — é só colar na mensagem para o time do OS.");
+    } catch {
+      toast.error("Não consegui copiar; selecione o texto da lista e copie à mão.");
+    }
+  };
+
+  return (
+    <Dialog open={aberto} onOpenChange={(o) => !o && onFechar()}>
+      <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Inconsistências no Takeat OS · {rotulo}</DialogTitle>
+          <DialogDescription>
+            A tela mostra os números como estão no OS. Isto é o que o Hub encontrou de errado, para você
+            repassar ao time que mantém o OS.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex justify-end">
+          <button type="button" onClick={copiar}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-medium text-primary-foreground hover:bg-primary/90">
+            <Copy className="h-3.5 w-3.5" /> Copiar para enviar
+          </button>
+        </div>
+        <div className="space-y-4">
+          {grupos.map(([tipo, lista]) => (
+            <section key={tipo}>
+              <h3 className="mb-1.5 text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {TITULO_INCONSISTENCIA[tipo]} <span className="num">({lista.length})</span>
+              </h3>
+              <ul className="space-y-1.5">
+                {lista.map((i, n) => (
+                  <li key={n} className="flex gap-2 text-[12.5px] leading-relaxed">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+                    <span>{i.texto}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

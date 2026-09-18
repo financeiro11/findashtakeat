@@ -355,31 +355,9 @@ export function completarMensal(
       return { v: (custosDaRegra + ads) / novos, origem, nota };
     };
 
-    // --- o OS erra a conta: refaz o que ele entregou pronto ---
-    // Achado na memória de cálculo (18/09/2026): o OS grava fórmula com divisão TRUNCADA —
-    // a Taxa de Conversão do Inside Sales de ago/26 dá 6,56% e ele grava 0; Leads por
-    // Parceiro 1,63 vira 1. Decisão do financeiro: o Hub recalcula e mostra o certo, com o
-    // número do OS guardado na nota. Só troca quando a fórmula fecha inteira (nenhuma
-    // entrada vazia, nenhum custo não identificado) e a diferença passa do arredondamento.
-    for (let volta = 0; volta < 6; volta++) {
-      let corrigiu = false;
-      for (const { ind, no } of formulas) {
-        const l = pegar(ind.id);
-        if (!l || l.realizado == null || (l.origem ?? "os") !== "os") continue;
-        if (ind.id === cacTotal?.id || ind.id === cacMkt?.id) continue;
-        const refeito = avaliar(no, leitura, custo);
-        if (refeito == null || !isFinite(refeito)) continue;
-        if (Math.abs(refeito - l.realizado) <= Math.max(0.01, Math.abs(l.realizado) * 0.005)) continue;
-        linhasDoMes.set(ind.id, {
-          ...l, realizado: refeito, origem: pior("hub", origemDe(refsDe(no).refs)),
-          nota: `O OS informou ${l.realizado.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}; ` +
-            `a fórmula dele com os números do mês dá ${refeito.toLocaleString("pt-BR", { maximumFractionDigits: 2 })} ` +
-            "(o OS trunca a divisão). O Hub mostra o recalculado.",
-        });
-        corrigiu = true;
-      }
-      if (!corrigiu) break;
-    }
+    // O número que o OS entregou pronto NUNCA é trocado aqui, mesmo quando a fórmula dele dá
+    // outro valor: a tela tem de bater com o OS (decisão do financeiro, 18/09/2026). A
+    // divergência vira item de `inconsistenciasDoMes`, para o time do OS corrigir lá.
 
     // --- ponto fixo: fórmula que depende de fórmula (LTV ← TM MRR ← Novo MRR Total) ---
     for (let volta = 0, aceitarParcial = false; volta < 12; volta++) {
@@ -603,8 +581,6 @@ export function explicar(
       return fmt(custoDaRef(listaOuNada, idDaFolha(n)), "BRL");
     }) + ` = ${fmt(resultado, ind.unidade)}`;
     const observacoes: string[] = [];
-    // O porquê gravado pelo cálculo (ex.: "O OS informou 0; a fórmula dele dá 6,56").
-    if (origem !== "os" && linha?.nota && /O OS informou/.test(linha.nota)) observacoes.push(linha.nota);
     if (origem === "hub_parcial") {
       const parciais = entradas.filter((e) => e.origem === "hub_parcial").map((e) => e.nome);
       observacoes.push(ehSomaPura(no) && entradas.some((e) => e.valor == null)
@@ -624,4 +600,156 @@ export function explicar(
   // --- lançado direto no OS ---
   if (resultado == null) return { ...base, tipo: "sem_dado", observacoes: ["Sem lançamento no OS para este mês."] };
   return { ...base, tipo: "lancado", observacoes: ["Número lançado (ou importado) direto no Takeat OS — não é calculado."] };
+}
+
+/* ================================ inconsistências do OS ================================ */
+//
+// O Hub mostra o número do OS como ele está — a tela tem de bater com o OS (decisão do
+// financeiro, 18/09/2026). O que parece errado no OS vira item desta lista, que o
+// financeiro repassa ao time que mantém o OS. Cada item diz o que está errado e o que o
+// Hub encontrou, com os números, para o outro lado conseguir achar sem perguntar.
+
+export type TipoInconsistencia =
+  | "formula_divergente"   // o número pronto do OS não bate com a fórmula dele
+  | "nao_calculado"        // o OS tem a fórmula e deixa o resultado vazio
+  | "canal_sem_lancamento" // total consolidado parcial porque um canal não lançou
+  | "sentido"              // indicador "menor é melhor" sem a marca no OS
+  | "sem_quantidade"       // o OS lança só o %, não a quantidade
+  | "custo_divergente";    // matriz de custos do OS ≠ Painel CAC (acrescentado pela tela)
+
+export type Inconsistencia = {
+  tipo: TipoInconsistencia;
+  /** Indicador a que o item se refere, quando é um só (para marcar na tela). */
+  indicadorId?: string;
+  texto: string;
+};
+
+export const TITULO_INCONSISTENCIA: Record<TipoInconsistencia, string> = {
+  formula_divergente: "Número do OS diferente da fórmula dele",
+  nao_calculado: "Fórmula que o OS não calcula",
+  canal_sem_lancamento: "Canal sem lançamento no mês",
+  sentido: "Indicador “menor é melhor” sem a marca",
+  sem_quantidade: "Só o percentual, sem a quantidade",
+  custo_divergente: "Custo do OS diferente do Painel CAC (Omie)",
+};
+
+type IndicadorAuditado = IndicadorOS & { menor_e_melhor?: boolean | null; ativo?: boolean | null; unidade?: string | null };
+
+const fmtPadrao = (v: number | null) => (v == null ? "—" : v.toLocaleString("pt-BR", { maximumFractionDigits: 2 }));
+
+export function inconsistenciasDoMes(
+  indicadores: IndicadorAuditado[],
+  linhas: LinhaMensalOS[], // JÁ completadas (saída de completarMensal)
+  custos: CustoOS[],
+  competencia: string,
+  fmt: (v: number | null, unidade?: string | null) => string = fmtPadrao,
+): Inconsistencia[] {
+  const comp = competencia.slice(0, 10);
+  const porId = new Map(indicadores.map((i) => [i.id, i]));
+  const doMes = new Map(linhas.filter((l) => l.competencia?.slice(0, 10) === comp).map((l) => [l.indicator_id, l]));
+  const lista = custos.filter((c) => c.competencia?.slice(0, 10) === comp);
+  const listaOuNada = lista.length ? lista : undefined;
+  const nome = (i: IndicadorOS) => `${i.canal} › ${i.indicador}`;
+  const saida: Inconsistencia[] = [];
+
+  const formulas = indicadores
+    .filter((i) => i.e_formula && i.formula && i.ativo !== false)
+    .map((i) => { try { return { i, no: parseFormula(i.formula!) }; } catch { return null; } })
+    .filter((x): x is { i: IndicadorAuditado; no: No } => x != null);
+
+  // O número do OS, não o que o Hub preencheu: a conferência é da conta DELE.
+  const doOS = (rid: string) => {
+    const l = doMes.get(rid);
+    return l && (l.origem ?? "os") === "os" ? l.realizado : null;
+  };
+
+  // 1. número pronto do OS × fórmula do OS, com as entradas do OS
+  for (const { i, no } of formulas) {
+    const l = doMes.get(i.id);
+    if (!l || l.realizado == null || (l.origem ?? "os") !== "os") continue;
+    const refeito = avaliar(no, doOS, (cid) => custoDaRef(listaOuNada, cid));
+    if (refeito == null || !isFinite(refeito)) continue;
+    if (Math.abs(refeito - l.realizado) <= Math.max(0.01, Math.abs(l.realizado) * 0.005)) continue;
+    const truncado = l.realizado === Math.trunc(refeito) || (l.realizado === 0 && Math.abs(refeito) < 100);
+    saida.push({
+      tipo: "formula_divergente", indicadorId: i.id,
+      texto: `${nome(i)}: o OS mostra ${fmt(l.realizado, i.unidade)}, mas a fórmula dele com os números do mês dá ` +
+        `${fmt(refeito, i.unidade)}${truncado ? " — parece divisão entre inteiros (as casas decimais somem)" : ""}.`,
+    });
+  }
+
+  // 2. fórmula sem resultado no OS que o Hub calculou
+  const vazios = formulas.filter(({ i }) => {
+    const l = doMes.get(i.id);
+    return l && l.realizado != null && (l.origem ?? "os") !== "os";
+  });
+  if (vazios.length) {
+    const consolidado = vazios.filter(({ i }) => i.canal === "Consolidado");
+    const resto = vazios.length - consolidado.length;
+    saida.push({
+      tipo: "nao_calculado",
+      texto: `O OS tem a fórmula mas deixa vazio: ${consolidado.map(({ i }) => `${i.indicador} (${i.departamento})`).join(", ") || "—"}` +
+        `${resto > 0 ? ` e mais ${resto} indicador(es) de canal` : ""}. O Hub calcula com a fórmula do próprio OS e marca como “Hub”.`,
+    });
+  }
+
+  // 3. canais que deixaram totais parciais
+  const faltasPorCanal = new Map<string, Set<string>>();
+  for (const { i, no } of formulas) {
+    const l = doMes.get(i.id);
+    if (l?.origem !== "hub_parcial" || !ehSomaPura(no)) continue;
+    for (const rid of refsDe(no).refs) {
+      if (doOS(rid) != null) continue;
+      const r = porId.get(rid);
+      if (!r) continue;
+      if (!faltasPorCanal.has(r.canal)) faltasPorCanal.set(r.canal, new Set());
+      faltasPorCanal.get(r.canal)!.add(r.indicador);
+    }
+  }
+  for (const [canal, nomes] of faltasPorCanal) {
+    saida.push({
+      tipo: "canal_sem_lancamento",
+      texto: `${canal} não lançou ${[...nomes].join(", ")} — os totais consolidados que somam esse canal ficam parciais.`,
+    });
+  }
+
+  // 4. sentido: o nome diz "menor é melhor", o OS não marca
+  const semMarca = [...new Set(indicadores
+    .filter((i) => i.ativo !== false && !i.menor_e_melhor && sentidoDe({ indicador: i.indicador, menor_e_melhor: false }) === "menor")
+    .map((i) => i.indicador))];
+  if (semMarca.length) {
+    saida.push({
+      tipo: "sentido",
+      texto: `Sem a marca “menor é melhor”: ${semMarca.join(", ")}. O próprio OS calcula o atingimento ao contrário (churn de 2,3% contra meta de 1% sai 230%).`,
+    });
+  }
+
+  // 5. churn da Ativação só em %
+  for (const [rid, l] of doMes) {
+    const i = porId.get(rid);
+    if (i?.canal === "Ativação" && i.indicador === "Customer Churn" && l.origem === "hub_estimado") {
+      saida.push({
+        tipo: "sem_quantidade", indicadorId: rid,
+        texto: `Ativação › Customer Churn: o OS lança só o %; a quantidade (${fmt(l.realizado, i.unidade)}) é estimada pelo Hub.`,
+      });
+    }
+  }
+
+  return saida;
+}
+
+/** O texto para colar numa mensagem ao time do OS. */
+export function textoParaEnviar(itens: Inconsistencia[], rotuloMes: string): string {
+  const grupos = new Map<TipoInconsistencia, Inconsistencia[]>();
+  for (const i of itens) {
+    if (!grupos.has(i.tipo)) grupos.set(i.tipo, []);
+    grupos.get(i.tipo)!.push(i);
+  }
+  const partes = [`Inconsistências no Takeat OS — ${rotuloMes} (conferência do Hub Financeiro)`];
+  let n = 0;
+  for (const [tipo, lista] of grupos) {
+    partes.push("", TITULO_INCONSISTENCIA[tipo]);
+    for (const i of lista) partes.push(`${++n}. ${i.texto}`);
+  }
+  return partes.join("\n");
 }

@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, Tooltip as RTooltip, CartesianGrid,
 } from "recharts";
-import { ChevronLeft, ChevronRight, Loader2, Star, Sigma, ArrowUpRight, ArrowDownRight } from "lucide-react";
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Loader2, Star, Sigma, ArrowUpRight, ArrowDownRight } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { comValorExato } from "@/components/ValorExato";
 import {
@@ -21,7 +21,7 @@ import {
   montarPainel, resumoFarois, mesPadrao, separarConsolidado, serieAte, fmtValorStr, fmtValorCurtoStr, fmtPctAtingStr, farol, atingimento, sentidoDe,
   type Origem,
 } from "@/lib/indicadores-os";
-import { completarMensal, type CustoOS, type AssinaturaOS } from "@/lib/indicadores-os-calculo";
+import { completarMensal, explicar, type CustoOS, type AssinaturaOS, type Explicacao } from "@/lib/indicadores-os-calculo";
 
 const sb = supabase as any;
 const LOTE = 1000;
@@ -269,7 +269,8 @@ export default function Indicadores() {
         Liderança OPS, mais o ADS; o CAC MKT é estimado (Investimentos + Comissões + ADS).
       </p>
 
-      <HistoricoIndicador ind={aberto} linhas={mensal} onFechar={() => setAberto(null)} />
+      <MemoriaDeCalculo ind={aberto} competencia={competencia} indicadores={indicadores} linhas={mensal}
+        custos={custos} carteira={carteira} onFechar={() => setAberto(null)} />
     </div>
   );
 }
@@ -569,45 +570,216 @@ function Semanal({
   );
 }
 
-/* ------------------------------ histórico de um indicador ------------------------------ */
-function HistoricoIndicador({
-  ind, linhas, onFechar,
-}: { ind: IndicadorOS | null; linhas: LinhaMensalOS[]; onFechar: () => void }) {
+/* ------------------------------ memória de cálculo ------------------------------ */
+
+const TIPO_CALCULO: Record<Explicacao["tipo"], string> = {
+  lancado: "Lançado no Takeat OS",
+  formula: "Fórmula do Takeat OS",
+  regra_cac: "Regra do Hub para o CAC (aprovada em 18/09/2026)",
+  carteira: "Carteira do Takeat OS",
+  estimativa: "Estimativa do Hub",
+  sem_dado: "Sem número neste mês",
+};
+
+/**
+ * "De onde saiu este número?" — a conta aberta de qualquer indicador, num mês. Entrada que
+ * também é calculada abre a memória dela (LTV → TM MRR → Novo MRR Total → canais), com
+ * trilha para voltar. A explicação vem de `explicar` (_shared), o mesmo módulo que faz a
+ * conta: o que está escrito aqui é o que foi somado.
+ */
+function MemoriaDeCalculo({
+  ind, competencia, indicadores, linhas, custos, carteira, onFechar,
+}: {
+  ind: IndicadorOS | null;
+  competencia: string | null;
+  indicadores: IndicadorOS[];
+  linhas: LinhaMensalOS[];
+  custos: CustoOS[];
+  carteira: AssinaturaOS[];
+  onFechar: () => void;
+}) {
+  const porId = useMemo(() => new Map(indicadores.map((i) => [i.id, i])), [indicadores]);
+  const [pilha, setPilha] = useState<string[]>([]);
+  const [mes, setMes] = useState<string | null>(null);
+
+  // Abrir outro indicador pela tela recomeça a trilha e volta ao mês da tela.
+  useEffect(() => {
+    setPilha(ind ? [ind.id] : []);
+    setMes(competencia);
+  }, [ind, competencia]);
+
+  const atualId = pilha[pilha.length - 1];
+  const atual = atualId ? porId.get(atualId) ?? null : null;
+
   const serie = useMemo(() => {
-    if (!ind) return [];
-    const doInd = linhas.filter((l) => l.indicator_id === ind.id && (l.realizado != null || (l.orcado ?? 0) > 0));
-    return doInd
+    if (!atual) return [];
+    return linhas
+      .filter((l) => l.indicator_id === atual.id && l.competencia && (l.realizado != null || (l.orcado ?? 0) > 0))
       .sort((a, b) => a.competencia.localeCompare(b.competencia))
       .slice(-13)
       .map((l) => ({
+        competencia: l.competencia.slice(0, 10),
         label: rotuloMes(l.competencia),
         realizado: l.realizado,
         origem: l.origem,
         nota: l.nota,
         orcado: (l.orcado ?? 0) > 0 ? l.orcado : null,
-        f: farol(l.realizado, l.orcado, sentidoDe(ind)),
+        f: farol(l.realizado, l.orcado, sentidoDe(atual)),
         pct: atingimento(l.realizado, l.orcado),
       }));
-  }, [ind, linhas]);
+  }, [atual, linhas]);
 
-  if (!ind) return null;
-  const u = ind.unidade;
+  const mesDaMemoria = mes ?? serie[serie.length - 1]?.competencia ?? null;
+  const exp = useMemo(
+    () => (atual && mesDaMemoria
+      ? explicar(atual.id, mesDaMemoria, indicadores, linhas, custos, carteira, (v, u) => fmtValorStr(v, u ?? "count"))
+      : null),
+    [atual, mesDaMemoria, indicadores, linhas, custos, carteira],
+  );
+  const linhaDoMes = serie.find((s) => s.competencia === mesDaMemoria);
+
+  if (!ind || !atual) return null;
+  const u = atual.unidade;
+
   return (
     <Dialog open={!!ind} onOpenChange={(o) => !o && onFechar()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{ind.indicador}</DialogTitle>
+          {pilha.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1 text-[11.5px] text-muted-foreground">
+              <button type="button" className="inline-flex items-center gap-0.5 hover:text-foreground"
+                onClick={() => setPilha((p) => p.slice(0, -1))}>
+                <ChevronLeft className="h-3.5 w-3.5" /> voltar
+              </button>
+              <span className="mx-1">·</span>
+              {pilha.map((pid, n) => (
+                <span key={`${pid}-${n}`} className="inline-flex items-center gap-1">
+                  {n > 0 && <ChevronRight className="h-3 w-3" />}
+                  <button type="button" className={cn("hover:text-foreground", n === pilha.length - 1 && "font-medium text-foreground")}
+                    onClick={() => setPilha((p) => p.slice(0, n + 1))}>
+                    {porId.get(pid)?.indicador ?? "?"}
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <DialogTitle>{atual.indicador}</DialogTitle>
           <DialogDescription>
-            {ind.departamento} › {ind.canal}
-            {sentidoDe(ind) === "menor" && " · menor é melhor"}
-            {ind.e_formula && " · calculado no OS"}
+            {atual.departamento} › {atual.canal}
+            {sentidoDe(atual) === "menor" && " · menor é melhor"}
           </DialogDescription>
         </DialogHeader>
+
+        {/* ---------------- a conta aberta ---------------- */}
+        {exp && mesDaMemoria && (
+          <section className="space-y-3 rounded-lg border border-border p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div className="flex items-baseline gap-2">
+                <span className="eyebrow">{rotuloMes(mesDaMemoria)}</span>
+                <span className="num text-[24px] font-semibold leading-none">{fmtValorStr(exp.resultado, u)}</span>
+                <SeloOrigem origem={exp.origem} nota={exp.nota} />
+              </div>
+              {linhaDoMes?.orcado != null && (
+                <span className="text-[12px] text-muted-foreground">
+                  meta <span className="num text-foreground">{fmtValorStr(linhaDoMes.orcado, u)}</span>
+                  {linhaDoMes.pct != null && <span className={cn("num ml-1.5 font-semibold", FAROL[linhaDoMes.f].texto)}>{fmtPctAtingStr(linhaDoMes.pct)}</span>}
+                </span>
+              )}
+            </div>
+
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{TIPO_CALCULO[exp.tipo]}</div>
+
+            {exp.formula && (
+              <div className="space-y-1.5 rounded-md bg-muted/50 px-3 py-2">
+                <div className="text-[12.5px] leading-relaxed">{exp.formula}</div>
+                {exp.conta && <div className="num text-[12.5px] leading-relaxed text-muted-foreground">{exp.conta}</div>}
+              </div>
+            )}
+
+            {exp.observacoes.length > 0 && (
+              <ul className="space-y-1 text-[12px] leading-relaxed">
+                {exp.observacoes.map((o) => (
+                  <li key={o} className={cn("flex gap-1.5", /mas a fórmula dele/.test(o) ? "text-warn" : "text-muted-foreground")}>
+                    {/mas a fórmula dele/.test(o) ? <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <span className="shrink-0">·</span>}
+                    {o}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {exp.entradas.length > 0 && (
+              <div>
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Números que entram na conta</div>
+                <table className="w-full text-[12.5px]">
+                  <tbody>
+                    {exp.entradas.map((e, n) => {
+                      const abre = !!e.id && porId.has(e.id);
+                      return (
+                        <tr key={`${e.id ?? e.nome}-${n}`} className="border-t border-border/40">
+                          <td className="py-1.5 pr-2">
+                            {abre ? (
+                              <button type="button" className="text-left underline decoration-dotted underline-offset-2 hover:text-primary"
+                                onClick={() => setPilha((p) => [...p, e.id!])}
+                                title={e.calculado ? "Abrir a conta deste número" : "Ver o histórico deste número"}>
+                                {e.nome}
+                              </button>
+                            ) : <span>{e.nome}</span>}
+                            {e.nota && <div className="text-[11px] text-muted-foreground">{e.nota}</div>}
+                          </td>
+                          <td className="py-1.5 pr-2 text-right">
+                            <span className="inline-flex items-center gap-1.5">
+                              <SeloOrigem origem={e.origem} nota={e.nota} />
+                              <span className={cn("num", e.valor == null && "text-muted-foreground")}>
+                                {e.valor == null ? "não lançado" : fmtValorStr(e.valor, e.unidade ?? "count")}
+                              </span>
+                            </span>
+                          </td>
+                          <td className="w-5 py-1.5 text-right text-muted-foreground">
+                            {abre && e.calculado && <ChevronRight className="h-3.5 w-3.5" />}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {exp.custos && exp.custos.length > 0 && (
+              <div>
+                <div className="mb-1 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <span>Custos do mês no OS (os_custos)</span>
+                  <span className="num normal-case tracking-normal">
+                    entram {fmtValorStr(exp.custos.filter((c) => c.entra).reduce((a, c) => a + c.valor, 0), "BRL")}
+                  </span>
+                </div>
+                <table className="w-full text-[12.5px]">
+                  <tbody>
+                    {exp.custos.map((c) => (
+                      <tr key={`${c.grupo}|${c.categoria}`} className={cn("border-t border-border/40", !c.entra && "text-muted-foreground")}>
+                        <td className="py-1 pr-2">
+                          <span className="text-muted-foreground">{c.grupo} › </span>
+                          <span className={cn(!c.entra && "line-through")}>{c.categoria}</span>
+                        </td>
+                        <td className={cn("num py-1 pr-2 text-right", !c.entra && "line-through")}>{fmtValorStr(c.valor, "BRL")}</td>
+                        <td className="w-20 py-1 text-right text-[11px]">
+                          {c.entra ? <span className="inline-flex items-center gap-0.5 text-pos"><Check className="h-3 w-3" /> entra</span> : "fica fora"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* ---------------- histórico: escolhe o mês da conta ---------------- */}
         {serie.length === 0 ? (
           <p className="py-6 text-center text-[12.5px] text-muted-foreground">Sem histórico lançado no OS.</p>
         ) : (
           <>
-            <div className="h-[240px]">
+            <div className="h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={serie} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <CartesianGrid stroke="hsl(var(--border))" vertical={false} />
@@ -623,30 +795,29 @@ function HistoricoIndicador({
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
-            <div className="max-h-[220px] overflow-y-auto">
-              <table className="w-full text-[12.5px]">
-                <thead>
-                  <tr className="text-[10.5px] uppercase tracking-wider text-muted-foreground">
-                    <th className="py-1 text-left font-medium">Mês</th>
-                    <th className="py-1 text-right font-medium">Realizado</th>
-                    <th className="py-1 text-right font-medium">Meta</th>
-                    <th className="py-1 text-right font-medium">Atingido</th>
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr className="text-[10.5px] uppercase tracking-wider text-muted-foreground">
+                  <th className="py-1 text-left font-medium">Mês · clique para ver a conta</th>
+                  <th className="py-1 text-right font-medium">Realizado</th>
+                  <th className="py-1 text-right font-medium">Meta</th>
+                  <th className="py-1 text-right font-medium">Atingido</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...serie].reverse().map((s) => (
+                  <tr key={s.competencia} onClick={() => setMes(s.competencia)}
+                    className={cn("cursor-pointer border-t border-border/40 hover:bg-muted/40", s.competencia === mesDaMemoria && "bg-primary/5")}>
+                    <td className="py-1">{s.label}</td>
+                    <td className="num py-1 text-right">
+                      <span className="inline-flex items-center gap-1.5"><SeloOrigem origem={s.origem} nota={s.nota} />{fmtValorStr(s.realizado, u)}</span>
+                    </td>
+                    <td className="num py-1 text-right text-muted-foreground">{fmtValorStr(s.orcado, u)}</td>
+                    <td className={cn("num py-1 text-right font-semibold", FAROL[s.f].texto)}>{fmtPctAtingStr(s.pct)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {[...serie].reverse().map((s) => (
-                    <tr key={s.label} className="border-t border-border/40">
-                      <td className="py-1">{s.label}</td>
-                      <td className="num py-1 text-right">
-                        <span className="inline-flex items-center gap-1.5"><SeloOrigem origem={s.origem} nota={s.nota} />{fmtValorStr(s.realizado, u)}</span>
-                      </td>
-                      <td className="num py-1 text-right text-muted-foreground">{fmtValorStr(s.orcado, u)}</td>
-                      <td className={cn("num py-1 text-right font-semibold", FAROL[s.f].texto)}>{fmtPctAtingStr(s.pct)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </table>
           </>
         )}
       </DialogContent>

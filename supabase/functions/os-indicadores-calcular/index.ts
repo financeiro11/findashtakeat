@@ -14,7 +14,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import {
-  completarMensal, type AssinaturaOS, type CustoOS, type IndicadorOS, type LinhaMensalOS,
+  completarMensal, idsSensiveis, type AssinaturaOS, type CustoOS, type IndicadorOS, type LinhaMensalOS,
 } from "../_shared/indicadores-os-calculo.ts";
 
 const corsHeaders = {
@@ -80,6 +80,8 @@ Deno.serve(async (req) => {
 
     const saida = completarMensal(inds, linhas, custos, carteira);
     const porId = new Map(inds.map((i) => [i.id, i]));
+    // Calculado a partir de Margem/LTV herda a marca: LTV/CAC com o CAC reconstrói o LTV.
+    const sensiveis = idsSensiveis(inds);
     const agora = new Date().toISOString();
 
     const calculadas = saida
@@ -91,7 +93,7 @@ Deno.serve(async (req) => {
           competencia: l.competencia.slice(0, 10),
           ano: l.ano, mes: l.mes,
           departamento: i?.departamento ?? null, canal: i?.canal ?? null, indicador: i?.indicador ?? null,
-          unidade: i?.unidade ?? null, sensivel: i?.sensivel ?? false,
+          unidade: i?.unidade ?? null, sensivel: sensiveis.has(l.indicator_id),
           orcado: l.orcado, realizado: l.realizado, origem: l.origem, nota: l.nota ?? null,
           calculado_em: agora,
         };

@@ -52,6 +52,36 @@ export type LinhaMensalOS = {
 export type CustoOS = { competencia: string; grupo: string; categoria: string; valor: number | null };
 export type AssinaturaOS = { competencia: string; clientes: number | null };
 
+/* ================================ sentido ================================ */
+
+export type Sentido = "maior" | "menor" | "neutro";
+
+// O OS só marca `menor_e_melhor` nos dois tempos do Suporte (18/09/2026). Churn,
+// cancelamento, downsell, CAC e CPL vêm sem a marca, e o `atingimento_pct` do próprio OS
+// sai como "230%" para um churn de 2,3% contra meta de 1% — lido pelo sentido padrão, o
+// pior resultado do mês pareceria o melhor. A regra por nome cobre isso até o OS corrigir
+// a marca; a marca, quando vier, vale sozinha. Mora aqui para a tela e o Assistente
+// lerem o farol do mesmo jeito.
+const MENOR_POR_NOME = /churn|cancelad|downsell|\bcac\b|\bcpl\b|payback|tempo|ratio volume/;
+// Investimento é orçamento a gastar, não meta a bater: passar do orçado não é "bom".
+const NEUTRO_POR_NOME = /^investimento/;
+
+const semAcento = (s: string) =>
+  s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+// LTV/CAC tem "cac" no nome e é o contrário: quanto MAIOR, melhor. Achado no teste com o
+// dado real de ago/26, que dizia "3,18 contra meta 3 — ruim".
+const MAIOR_POR_NOME = /^ltv/;
+
+export function sentidoDe(ind: { indicador: string; menor_e_melhor?: boolean | null }): Sentido {
+  if (ind.menor_e_melhor) return "menor";
+  const nome = semAcento(ind.indicador ?? "");
+  if (MAIOR_POR_NOME.test(nome)) return "maior";
+  if (NEUTRO_POR_NOME.test(nome)) return "neutro";
+  if (MENOR_POR_NOME.test(nome)) return "menor";
+  return "maior";
+}
+
 /* ================================ parser ================================ */
 
 export type No =
@@ -159,6 +189,30 @@ export function avaliar(no: No, valor: (id: string) => number | null, custo: (id
       return b === 0 ? null : a / b;
     }
   }
+}
+
+/**
+ * Os indicadores que DEPENDEM de um sensível (direta ou indiretamente) também são sensíveis.
+ *
+ * O OS marca só Margem de Contribuição e LTV. Mas LTV/CAC e CAC Payback são calculados com
+ * eles, e com LTV/CAC e o CAC (que não é sensível) qualquer um reconstrói o LTV. Quem não vê
+ * as Demonstrações não pode ver nenhum dos três.
+ */
+export function idsSensiveis(indicadores: (IndicadorOS & { sensivel?: boolean | null })[]): Set<string> {
+  const sens = new Set(indicadores.filter((i) => i.sensivel).map((i) => i.id));
+  const deps = indicadores
+    .filter((i) => i.e_formula && i.formula)
+    .map((i) => {
+      try { return { id: i.id, refs: refsDe(parseFormula(i.formula!)).refs }; } catch { return null; }
+    })
+    .filter((x): x is { id: string; refs: string[] } => x != null);
+  for (let mudou = true; mudou;) {
+    mudou = false;
+    for (const d of deps) {
+      if (!sens.has(d.id) && d.refs.some((r) => sens.has(r))) { sens.add(d.id); mudou = true; }
+    }
+  }
+  return sens;
 }
 
 /* ================================ custos ================================ */

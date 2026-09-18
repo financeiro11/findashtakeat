@@ -23,6 +23,10 @@ describe("sentidoDe", () => {
     expect(sentidoDe({ indicador: "Tempo médio resolução", menor_e_melhor: true })).toBe("menor");
     expect(sentidoDe({ indicador: "Qualquer coisa", menor_e_melhor: true })).toBe("menor");
   });
+  it("LTV/CAC é maior-é-melhor, apesar do 'CAC' no nome", () => {
+    expect(sentidoDe({ indicador: "LTV/CAC", menor_e_melhor: null })).toBe("maior");
+    expect(sentidoDe({ indicador: "LTV", menor_e_melhor: null })).toBe("maior");
+  });
   it("investimento é neutro; o resto é maior-é-melhor", () => {
     expect(sentidoDe({ indicador: "Investimento Meta ADS", menor_e_melhor: null })).toBe("neutro");
     expect(sentidoDe({ indicador: "Novo MRR", menor_e_melhor: null })).toBe("maior");

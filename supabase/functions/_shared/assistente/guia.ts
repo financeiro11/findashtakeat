@@ -248,6 +248,7 @@ export const GUIA: readonly Verbete[] = [
     quemUsa: "Financeiro, para apresentar à diretoria.",
     cuidados: [
       "Publicar congela o HTML da apresentação: o que foi publicado não muda depois, mesmo que o número mude.",
+      "A fileira 'KPIs · aquisição' do Resumo (novos clientes, CAC, LTV/CAC, Payback) vem do Takeat OS, do mês exato da reunião. O selo 'Hub', 'parcial' ou '≈' marca o que o OS deixou vazio e o Hub calculou com a fórmula do próprio OS. LTV/CAC e Payback só aparecem para quem vê as Demonstrações.",
     ],
     termos: ["revisão do mês", "tracker", "ceo", "reunião mensal", "apresentar o mês"],
   },
@@ -670,7 +671,10 @@ export const GUIA: readonly Verbete[] = [
       "O quadro “Departamento fora do padrão”, abaixo da matriz, lista quem está no cadastro e foi pago na categoria de outro departamento (o título do Omie não tem departamento: ele está no nome da categoria). “Muda o CAC” é o caso em que o dinheiro conta noutra linha; ignorar cala o caso para o lançamento, a pessoa ou o departamento, e ele segue na aba Ignorados. Só quem vê a folha inteira enxerga o quadro.",
       "“Corrigir no Omie”, no menu de cada caso do quadro, troca a categoria do título no ERP pela do mesmo tipo na família do departamento do cadastro (Escala - Suporte vira Escala - Onboarding). Mostra de → para de cada título antes do clique; quando há mais de uma família possível, a pessoa escolhe. Mês com período contábil fechado no Omie é recusado pelo ERP. Se o Portal RH concordar com a categoria atual, o certo pode ser corrigir o cadastro, não o ERP.",
     ],
-    termos: ["cac", "aquisição", "custo por cliente", "marketing", "comercial", "mídia paga", "departamento errado", "categoria do colaborador"],
+    comoLer: [
+      "O Painel CAC é o oficial. O quadro 'Conferência com o Takeat OS', abaixo da conferência com a DRE, compara linha a linha esta matriz com a matriz de custos que o time de RPA mantém no OS — é de lá que sai o CAC da tela Metas & Indicadores. Linha que diverge se corrige no OS.",
+    ],
+    termos: ["cac", "aquisição", "custo por cliente", "marketing", "comercial", "mídia paga", "departamento errado", "categoria do colaborador", "takeat os", "conferência com o os"],
   },
   {
     rota: "/governanca/vigilancia",

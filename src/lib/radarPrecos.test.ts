@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   lerSpecs, avaliar, classificar, pisoDePreco, condicaoDoTitulo, textoWhats, textoWhatsLote,
   deveAvisar, resumoDoAlvo, faltaIdentidade, nomeNoEndereco, fonteForaDoAssunto, somarRendimento,
-  disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota, sugerirTeto, lerEmbalagem,
+  disponibilidade, totalDaOferta, economiaDe, pesoDaNota, textoNota, sugerirTeto, lerEmbalagem, agruparIguais, mapaDeJuntados, planoDeJuntar, validarSugestoesDeIguais,
   type AlvoSpecs, type OfertaBruta,
 } from "./radarPrecos";
 
@@ -788,5 +788,77 @@ describe("avaliar — consumível se compara por unidade, não por etiqueta", ()
     const a = avaliar(ALVO, TETO, oferta("Notebook Lenovo i5-1235U 16GB RAM 512GB SSD", 2890));
     expect(a.embalagem).toBeNull();
     expect(a.comparavel).toBe(a.total);
+  });
+});
+
+describe("agruparIguais", () => {
+  const t = "Notebook Asus VivoBook 15 Intel Core i5 1334U 15,6\" 16GB SSD 512...";
+  it("junta o mesmo título vindo de lojas diferentes, com a mais barata na frente", () => {
+    const g = agruparIguais([
+      { id: 1, titulo: t, condicao: "novo" },
+      { id: 2, titulo: "Notebook Asus Vivobook Go 15 Ryzen 5", condicao: "novo" },
+      { id: 3, titulo: t.toUpperCase(), condicao: "novo" },
+      { id: 4, titulo: `${t} `, condicao: "novo" },
+    ]);
+    expect(g.map((x) => x.map((o) => o.id))).toEqual([[1, 3, 4], [2]]);
+  });
+  it("não junta novo com usado", () => {
+    const g = agruparIguais([
+      { id: 1, titulo: t, condicao: "novo" },
+      { id: 2, titulo: t, condicao: "usado" },
+    ]);
+    expect(g).toHaveLength(2);
+  });
+  it("junta o que a pessoa disse que é igual, mesmo com título cortado diferente", () => {
+    const juntados = mapaDeJuntados([
+      { titulo: "Notebook Asus VivoBook 15 i5 1334U 16GB SSD 512...", grupo: "g1" },
+      { titulo: "NOTEBOOK ASUS VIVOBOOK 15 I5 1334U 16GB SSD 512GB W11", grupo: "g1" },
+    ]);
+    const g = agruparIguais([
+      { id: 1, titulo: "Notebook Asus VivoBook 15 i5 1334U 16GB SSD 512...", condicao: "novo" },
+      { id: 2, titulo: "Notebook Asus VivoBook 15 i5 1334U 16GB SSD 512GB W11", condicao: "usado" },
+      { id: 3, titulo: "Notebook Asus VivoBook 15 i5 1334U 16GB SSD 512...", condicao: "novo" },
+    ], juntados);
+    expect(g.map((x) => x.map((o) => o.id))).toEqual([[1, 2, 3]]);
+  });
+});
+
+describe("planoDeJuntar", () => {
+  const l = (id: number, titulo: string, grupo: string, alvo_id = "a") => ({ id, alvo_id, titulo, grupo });
+  it("grupo novo quando ninguém está juntado", () => {
+    expect(planoDeJuntar("a", ["X", "Y"], [], "novo")).toEqual([
+      { alvo_id: "a", titulo: "X", grupo: "novo" },
+      { alvo_id: "a", titulo: "Y", grupo: "novo" },
+    ]);
+  });
+  it("entra no grupo que já existe e não duplica título equivalente", () => {
+    const r = planoDeJuntar("a", ["x", "Y"], [l(1, "X", "g1"), l(2, "Z", "g1")], "novo");
+    expect(r.map((x) => [x.titulo, x.grupo])).toEqual([["X", "g1"], ["Z", "g1"], ["Y", "g1"]]);
+  });
+  it("funde dois grupos e ignora outro alvo", () => {
+    const r = planoDeJuntar("a", ["X", "W"], [l(1, "X", "g1"), l(2, "W", "g2"), l(3, "V", "g2"), l(4, "W", "g9", "b")], "novo");
+    expect(new Set(r.map((x) => x.grupo))).toEqual(new Set(["g1"]));
+    expect(r.map((x) => x.titulo).sort()).toEqual(["V", "W", "X"]);
+  });
+});
+
+describe("validarSugestoesDeIguais", () => {
+  const titulos = [
+    "Notebook Asus VivoBook 15 Intel Core i5 1334U 15,6\" 16GB SSD 512...",
+    "Notebook ASUS Vivobook 15 X1504VA i5-1334U 16GB 512GB SSD Windows 11",
+    "Notebook Asus Vivobook 15 i5 1334U 8GB SSD 256GB",
+    "Notebook Lenovo IdeaPad 3 i5 16GB 512GB",
+  ];
+  it("aceita título cortado com o completo", () => {
+    expect(validarSugestoesDeIguais(titulos, [{ indices: [0, 1], porque: "mesmo modelo" }]))
+      .toEqual([{ indices: [0, 1], porque: "mesmo modelo" }]);
+  });
+  it("descarta o conjunto inteiro quando RAM, disco ou marca divergem", () => {
+    expect(validarSugestoesDeIguais(titulos, [{ indices: [0, 1, 2] }])).toEqual([]);
+    expect(validarSugestoesDeIguais(titulos, [{ indices: [1, 3] }])).toEqual([]);
+  });
+  it("ignora índice inválido e não repete anúncio em dois conjuntos", () => {
+    const r = validarSugestoesDeIguais(titulos, [{ indices: [0, 1, 9] }, { indices: [1, 0] }, { indices: [2] }]);
+    expect(r.map((x) => x.indices)).toEqual([[0, 1]]);
   });
 });

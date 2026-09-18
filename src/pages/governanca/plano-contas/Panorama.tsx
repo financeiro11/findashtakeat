@@ -3,7 +3,8 @@ import { Info, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { abrev } from "@/pages/cartao/valores";
 import { abrevStr } from "@/pages/cartao/fmt";
-import { rotuloPeriodo, sinaisDaCategoria, type Base, type NoPlano, type Recorte } from "@/lib/planoContas";
+import { chaveMarca, rotuloPeriodo, sinaisDaCategoria, type Base, type NoPlano, type Recorte } from "@/lib/planoContas";
+import { tipoDaBase } from "@/lib/linksPlanoContas";
 import { Secao, Variacao } from "./comum";
 
 /**
@@ -13,20 +14,23 @@ import { Secao, Variacao } from "./comum";
  * os sinais escritos por regra e as maiores variações em VALOR. Variação em
  * porcentagem sozinha poria no topo a categoria que foi de R$ 12 para R$ 90.
  */
-export function Panorama({ folhas, base, recorte, onSelecionar }: {
+export function Panorama({ folhas, base, recorte, onSelecionar, marcas }: {
   folhas: NoPlano[];
   base: Base;
   recorte: Recorte;
   onSelecionar: (codigo: string) => void;
+  /** chaves `codigo|dre|dfc` marcadas como fora de propósito */
+  marcas: ReadonlyMap<string, unknown>;
 }) {
   const sinais = useMemo(
     () => folhas
-      .flatMap((no) => sinaisDaCategoria(no, base, null, abrevStr).map((s) => ({ no, s })))
+      .flatMap((no) => sinaisDaCategoria(no, base, null, abrevStr, marcas.has(chaveMarca(no.codigo, tipoDaBase(base))))
+        .map((s) => ({ no, s })))
       .sort((a, b) =>
         a.s.gravidade !== b.s.gravidade
           ? (a.s.gravidade === "atencao" ? -1 : 1)
           : Math.abs(b.no.stats.total) - Math.abs(a.no.stats.total)),
-    [folhas, base],
+    [folhas, base, marcas],
   );
 
   const variacoes = useMemo(

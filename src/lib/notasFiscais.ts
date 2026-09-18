@@ -278,6 +278,9 @@ export function motivoBloqueio(
   // O estorno é o primeiro e é o que a avulsa NÃO alcança — de propósito, e
   // acima de tudo o resto.
   if (l.estornado) return "Cobrança estornada — emitir criaria imposto sobre receita devolvida.";
+  // Gêmea de `bloqueioDeEmissao` (omie-nfse-sync): o espelho marca a apagada
+  // como DELETED desde 15/09/2026, e sem esta linha a frase seria "não recebida".
+  if (String(l.status_asaas ?? "").toUpperCase() === "DELETED") return "Cobrança excluída no Asaas — não há cobrança para faturar.";
   if (l.situacao === "emitida_omie") return "Já tem NFS-e autorizada no Omie.";
   if (l.situacao === "emitida_asaas") return "Já tem nota autorizada no Asaas.";
   // Rejeitada NÃO libera emissão daqui: a OS já está faturada no Omie: emitir de
@@ -827,6 +830,9 @@ export const BLOQUEIOS_CADASTRO: Record<string, string> = {
     "Existe cadastro parecido no Omie com outro documento. Cadastrar sem decidir criaria duplicado.",
   sem_cliente_no_espelho:
     "A carga local do Asaas não tem este cliente, então não há endereço para mandar.",
+  omie_pausa:
+    "O Omie pediu uma pausa nas criações de cadastro (limite de uso da API). Nada foi escrito e o cadastro " +
+    "não tem defeito — tente de novo em alguns minutos; clicar antes só prolonga a pausa.",
 };
 
 export const FONTE_ENDERECO: Record<string, string> = {
@@ -859,6 +865,10 @@ export function recadoDoCadastro(c: CadastroNoOmie): { rotulo: string; tom: "ok"
       tom: "aviso",
       ajuda: BLOQUEIOS_CADASTRO[c.motivo ?? ""] ?? c.motivo ?? "Bloqueado.",
     };
+  }
+  // Registros de antes de 16/09/2026: pausa de API gravada como recusa.
+  if (/bloquead[ao] por consumo|consumo (indevido|redundante)/i.test(c.motivo ?? "")) {
+    return { rotulo: "Adiado pelo Omie", tom: "aviso", ajuda: BLOQUEIOS_CADASTRO.omie_pausa };
   }
   return {
     rotulo: "O Omie recusou",

@@ -67,6 +67,9 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE", busca: ["saldo", "banco", "capital de giro", "ponto de equilíbrio"] },
     { title: "Asaas", url: "/asaas", icon: CreditCard, busca: ["cobranças", "recebimentos", "estornos"] },
     { title: "Assinaturas", url: "/assinaturas", icon: Repeat, busca: ["mrr", "recorrência", "churn", "carteira"] },
+    { title: "Metas & Indicadores", url: "/indicadores", icon: Target, badge: "OS",
+      busca: ["takeat os", "metas", "kpi", "north star", "funil", "leads", "conversão", "novo mrr", "canal",
+              "inside sales", "field sales", "performance", "ativação", "sucesso", "suporte", "csat", "comitê"] },
     { title: "Parceiros", url: "/operacional/parceiros", icon: Handshake, busca: ["embaixadores", "bonificação", "parcerias"] },
   ]},
   { label: "Time Financeiro", items: [

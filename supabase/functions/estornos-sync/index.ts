@@ -24,12 +24,26 @@
 //    (TETO_CLIENTES) e as seguintes completam. O casamento por LINK não depende
 //    disso — o nome só melhora o casamento das linhas sem link.
 //
+// DUAS FONTES PARA OS PARCIAIS (16/09/2026). Desde 15/09 o `asaas-webhook` grava
+// cada cobrança no espelho em segundos e relê na API toda cobrança com estorno —
+// o `refunds[]` de que a varredura por vencimento existia para achar já está em
+// `asaas_cache`. Conferido antes de trocar: das 358 cobranças com estorno na
+// janela, 356 batiam com o espelho, com a mesma quantidade de devoluções.
+//   fonte "espelho" (padrão, os três crons do dia) → os parciais saem do
+//                  espelho; ZERO requisição além dos totais. A varredura fatiada,
+//                  que falhava 7 de 12 rodadas, sai do caminho diário.
+//   fonte "api"   → a varredura fatiada de sempre, com cursor próprio. É a rede
+//                  semanal: cura no espelho a cobrança cujo estorno ele não viu
+//                  (as varreduras não revisitam cobrança paga de mês fechado) e é
+//                  a única que APAGA estorno cancelado — o espelho não pode, ver
+//                  `limparOrfaos`.
+//
 // Ações (body.action):
-//   "atualizar"  → Asaas + planilha + conciliação.  { desde?, ate?, completo? }
-//                  A janela vai FATIADA e com relógio (ver "o relógio e a fatia"):
-//                  o que não couber em 150s fica anotado num cursor e a rodada
-//                  seguinte retoma dali. `completo:true` desliga o relógio;
-//                  `{desde,ate}` puxa história à mão e não mexe no cursor.
+//   "atualizar"  → Asaas + planilha + conciliação.  { fonte?, desde?, ate?, completo? }
+//                  Na fonte "api" a janela vai FATIADA e com relógio (ver "o
+//                  relógio e a fatia"): o que não couber em 150s fica anotado num
+//                  cursor e a rodada seguinte retoma dali. `completo:true` desliga
+//                  o relógio; `{desde,ate}` puxa história à mão e não mexe no cursor.
 //   "recalcular" → só relê a planilha e reconcilia. ZERO requisições ao Asaas.
 //   "conciliar"  → só a conciliação, do espelho local. Zero requisições.
 //   "preview"    → amostra crua, para conferir campos.
@@ -37,6 +51,10 @@
 // Auth: usuário logado OU cron (x-cron-token), como nas outras syncs.
 
 import { asaasGet, asaasList } from "../_shared/asaas.ts";
+import { gravar, isoDate, mapCustomer, mapPayment } from "../_shared/asaas-espelho.ts";
+import {
+  type Estorno, clientesDoEspelho, conciliar, estornosDaCobranca, gravarEstornos, limparOrfaos,
+} from "../_shared/estornos-asaas.ts";
 import { requireUser } from "../_shared/auth.ts";
 import { lerIntervalo, refAba } from "../_shared/sheets.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
@@ -122,8 +140,6 @@ function fatiar(de: string, ate: string): Fatia[] {
 
 /* --------------------------------- helpers -------------------------------- */
 
-const num = (v: unknown) => { const n = typeof v === "number" ? v : parseFloat(String(v ?? "")); return isNaN(n) ? 0 : n; };
-
 function hojeBRT(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 }
@@ -132,13 +148,6 @@ function somaDias(ymd: string, dias: number): string {
   d.setUTCDate(d.getUTCDate() + dias);
   return d.toISOString().slice(0, 10);
 }
-function isoDate(s?: string | null): string | null {
-  if (!s) return null;
-  const d = String(s).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
-}
-const competenciaDe = (ymd: string | null) => (ymd ? `${ymd.slice(0, 7)}-01` : null);
-
 /** Sem acento, sem caixa, sem pontuação — a chave de comparação de nomes. */
 function chave(s: unknown): string {
   return String(s ?? "")
@@ -299,51 +308,8 @@ async function gravarPlanilha(supabase: any, linhas: LinhaPlanilha[]) {
 
 /* --------------------------------- Asaas ---------------------------------- */
 
-type Estorno = {
-  id: string; id_pagamento: string; indice: number;
-  cliente_id: string | null; descricao: string | null; assinatura: string | null;
-  forma: string | null; status_cobranca: string | null; status_estorno: string | null;
-  parcial: boolean; valor_cobranca: number; valor_estornado: number;
-  data_estorno: string | null; data_vencimento: string | null; data_pagamento: string | null;
-  competencia: string | null; invoice_url: string | null; comprovante_url: string | null;
-  dados: unknown;
-};
-
-/** Explode uma cobrança nos seus estornos. Sem `refunds`, não é estorno — devolve []. */
-function estornosDaCobranca(p: any): Estorno[] {
-  const refunds = Array.isArray(p?.refunds) ? p.refunds : [];
-  if (!refunds.length) return [];
-  const valor = num(p?.value);
-  const somaDone = refunds
-    .filter((r: any) => String(r?.status).toUpperCase() === "DONE")
-    .reduce((s: number, r: any) => s + num(r?.value), 0);
-  // "Parcial" é sobre a COBRANÇA, não sobre cada devolução: três estornos de R$ 100
-  // numa cobrança de R$ 300 não são parciais. Por isso a soma dos concluídos.
-  const parcial = String(p?.status).toUpperCase() !== "REFUNDED" || (somaDone > 0 && somaDone + 0.005 < valor);
-  const venc = isoDate(p?.dueDate);
-
-  return refunds.map((r: any, i: number) => ({
-    id: `${p.id}#${i}`,
-    id_pagamento: String(p?.id ?? ""),
-    indice: i,
-    cliente_id: p?.customer ? String(p.customer) : null,
-    descricao: p?.description ?? null,
-    assinatura: p?.subscription ?? null,
-    forma: p?.billingType ?? null,
-    status_cobranca: p?.status ?? null,
-    status_estorno: String(r?.status ?? "").toUpperCase() || null,
-    parcial,
-    valor_cobranca: valor,
-    valor_estornado: num(r?.value),
-    data_estorno: isoDate(r?.dateCreated),
-    data_vencimento: venc,
-    data_pagamento: isoDate(p?.paymentDate) ?? isoDate(p?.confirmedDate),
-    competencia: competenciaDe(venc),
-    invoice_url: p?.invoiceUrl ?? null,
-    comprovante_url: r?.transactionReceiptUrl ?? p?.transactionReceiptUrl ?? null,
-    dados: r,
-  }));
-}
+// `estornosDaCobranca`, `gravarEstornos`, `limparOrfaos` e `conciliar` moram em
+// `_shared/estornos-asaas.ts` desde 16/09/2026 — o `asaas-webhook` também grava.
 
 /**
  * Resolve nomes de cliente que ainda não estão no cache, em lote limitado.
@@ -356,13 +322,7 @@ async function resolverClientes(
   supabase: any, ids: string[], teto = TETO_CLIENTES,
 ): Promise<{ mapa: Map<string, any>; resolvidos: number; faltam: number }> {
   const unicos = [...new Set(ids.filter(Boolean))];
-  const mapa = new Map<string, any>();
-
-  for (let i = 0; i < unicos.length; i += 300) {
-    const { data } = await supabase.from("asaas_cache")
-      .select("id_asaas, dados").eq("tipo", "customer").in("id_asaas", unicos.slice(i, i + 300));
-    for (const r of (data ?? []) as any[]) mapa.set(r.id_asaas, r.dados);
-  }
+  const mapa = await clientesDoEspelho(supabase, unicos);
 
   // O cache é local e barato; a ida ao Asaas é que custa — uma requisição por nome.
   // O `teto` é ORÇAMENTO DA RODADA e não da chamada: com a janela fatiada esta função
@@ -372,68 +332,78 @@ async function resolverClientes(
   const faltantes = unicos.filter((id) => !mapa.has(id));
   const lote = faltantes.slice(0, Math.max(0, teto));
   if (lote.length) {
-    const buscados = await Promise.all(lote.map(async (id) => {
+    const buscados = (await Promise.all(lote.map(async (id) => {
       try { return await asaasGet<any>(`/customers/${id}`); } catch { return null; }
-    }));
-    const linhas = buscados.filter(Boolean).map((c: any) => ({
-      tipo: "customer", id_asaas: String(c.id), status: c?.deleted ? "DELETED" : "ACTIVE",
-      valor: null, data_criacao: isoDate(c?.dateCreated), dados: c, atualizado_em: new Date().toISOString(),
-    }));
-    for (let i = 0; i < linhas.length; i += 200) {
-      await supabase.from("asaas_cache").upsert(linhas.slice(i, i + 200), { onConflict: "tipo,id_asaas" });
-    }
-    for (const c of buscados) if (c) mapa.set(String(c.id), c);
+    }))).filter((c: any) => c?.id);
+    await gravar(supabase, buscados.map(mapCustomer)).catch((e) =>
+      console.warn("estornos-sync: clientes não gravaram no espelho:", e instanceof Error ? e.message : e));
+    for (const c of buscados) mapa.set(String(c.id), c);
   }
   return { mapa, resolvidos: lote.length, faltam: Math.max(0, faltantes.length - lote.length) };
 }
 
-async function gravarEstornos(supabase: any, estornos: Estorno[], mapaClientes: Map<string, any>) {
-  const linhas = estornos.map((e) => {
-    const c = e.cliente_id ? mapaClientes.get(e.cliente_id) : null;
-    return {
-      ...e,
-      cliente_nome: c?.name ?? null,
-      cliente_documento: c?.cpfCnpj ?? null,
-      atualizado_em: new Date().toISOString(),
-    };
-  });
-  const LOTE = 400;
-  for (let i = 0; i < linhas.length; i += LOTE) {
-    const { error } = await supabase.from("estornos_asaas")
-      .upsert(linhas.slice(i, i + LOTE), { onConflict: "id", ignoreDuplicates: false });
-    if (error) throw new Error(`gravar estornos_asaas: ${error.message}`);
+/**
+ * O espelho que não viu o estorno, curado com o que a API acabou de trazer.
+ *
+ * Só na fonte "api", e só a cobrança cuja contagem de `refunds` discorda do
+ * espelho — gravar as ~2,8 mil de cada fatia engordaria o heap à toa (ver
+ * `asaas_cache` heap gordo). É isto que faz a fonte "espelho" dos dias seguintes
+ * enxergar o parcial que as varreduras do `asaas-sync` não revisitam.
+ */
+async function curarEspelhoDosEstornos(supabase: any, pagamentos: any[]): Promise<number> {
+  const ids = pagamentos.map((p) => String(p?.id ?? "")).filter(Boolean);
+  if (!ids.length) return 0;
+  const noEspelho = new Map<string, number>();
+  for (let i = 0; i < ids.length; i += 300) {
+    const { data, error } = await supabase.from("asaas_cache")
+      .select("id_asaas, estornos").eq("tipo", "payment").in("id_asaas", ids.slice(i, i + 300));
+    if (error) throw new Error(`asaas_cache (estornos): ${error.message}`);
+    for (const r of (data ?? []) as any[]) noEspelho.set(String(r.id_asaas), Number(r.estornos ?? 0));
   }
-  return linhas.length;
+  const divergentes = pagamentos.filter((p) => {
+    const n = Array.isArray(p?.refunds) ? p.refunds.length : 0;
+    const e = noEspelho.get(String(p?.id));
+    // Fora do espelho e sem estorno: não é assunto desta função.
+    return e === undefined ? n > 0 : e !== n;
+  });
+  return divergentes.length ? await gravar(supabase, divergentes.map(mapPayment)) : 0;
 }
 
 /**
- * Apaga o estorno que sumiu do Asaas — só entre as cobranças que ACABAMOS de ver.
+ * Os parciais pelo espelho: as cobranças com `refunds[]` e vencimento na janela.
  *
- * Estorno cancelado no Asaas some do array `refunds`; a linha antiga ficaria viva
- * no espelho somando um dinheiro que voltou. O recorte por cobrança visitada é o
- * que torna isso seguro sob fatiamento: uma rodada que só viu março não pode
- * concluir nada sobre abril, e por não concluir, não apaga.
+ * Paginado: o PostgREST corta em 1.000 linhas calado, e a janela tinha 356 em
+ * 16/09/2026 — o teto chega antes de alguém lembrar dele.
  */
-async function limparOrfaos(supabase: any, visitados: string[], vivos: Set<string>): Promise<number> {
-  let removidos = 0;
-  for (let i = 0; i < visitados.length; i += 300) {
-    const { data } = await supabase.from("estornos_asaas").select("id").in("id_pagamento", visitados.slice(i, i + 300));
-    const orfaos = (data ?? []).map((r: any) => r.id).filter((id: string) => !vivos.has(id));
-    if (orfaos.length) {
-      await supabase.from("estornos_asaas").delete().in("id", orfaos);
-      removidos += orfaos.length;
-    }
+async function parciaisDoEspelho(supabase: any, de: string, ate: string): Promise<any[]> {
+  const out: any[] = [];
+  const PAGINA = 500;
+  for (let desde = 0; ; desde += PAGINA) {
+    const { data, error } = await supabase.from("asaas_cache")
+      .select("dados")
+      .eq("tipo", "payment").gt("estornos", 0)
+      .gte("data_vencimento", de).lte("data_vencimento", ate)
+      .order("id_asaas")
+      .range(desde, desde + PAGINA - 1);
+    if (error) throw new Error(`asaas_cache (parciais): ${error.message}`);
+    for (const r of (data ?? []) as any[]) if (r?.dados?.id) out.push(r.dados);
+    if (!data || data.length < PAGINA) break;
   }
-  return removidos;
+  return out;
 }
 
 /* ------------------------------ estado/cursor ------------------------------ */
 
 type Estado = { ultima_completa: string | null; detalhe: Record<string, unknown> };
 
-async function lerEstado(supabase: any): Promise<Estado> {
+/** `estornos` é o escopo que a tela e o alarme leem (a rodada diária); a fonte
+ *  "api" guarda o cursor das fatias em `estornos:api`, para as duas não se
+ *  atropelarem. */
+const escopoDa = (fonte: "espelho" | "api") => (fonte === "api" ? "estornos:api" : "estornos");
+
+async function lerEstado(supabase: any, escopo: string): Promise<Estado> {
   const { data } = await supabase.from("asaas_sync_estado")
-    .select("ultima_completa, detalhe").eq("escopo", "estornos").maybeSingle();
+    .select("ultima_completa, detalhe").eq("escopo", escopo).maybeSingle();
   return {
     ultima_completa: data?.ultima_completa ?? null,
     detalhe: (data?.detalhe ?? {}) as Record<string, unknown>,
@@ -447,10 +417,10 @@ async function lerEstado(supabase: any): Promise<Estado> {
  * chega sem aviso: não há exceção para capturar, o processo é derrubado. Um cursor
  * escrito só no fim seria escrito exatamente nas rodadas que não precisavam dele.
  */
-async function gravarEstado(supabase: any, patch: Record<string, unknown>, completou: boolean) {
+async function gravarEstado(supabase: any, escopo: string, patch: Record<string, unknown>, completou: boolean) {
   const agora = new Date().toISOString();
   await supabase.from("asaas_sync_estado").upsert({
-    escopo: "estornos",
+    escopo,
     ultima_incremental: agora,
     // `ultima_completa` é o que diz se o desenho ainda dá conta: ela só anda quando
     // a volta INTEIRA se fecha. Se parar de andar, as fatias deixaram de acompanhar
@@ -458,21 +428,6 @@ async function gravarEstado(supabase: any, patch: Record<string, unknown>, compl
     ...(completou ? { ultima_completa: agora } : {}),
     detalhe: patch,
   }, { onConflict: "escopo" });
-}
-
-/* ------------------------------- conciliação ------------------------------- */
-
-/**
- * Amarra cada estorno a uma linha da planilha. A conta mora no Postgres
- * (`estornos_conciliar`) e não aqui: são 1.300 estornos × 222 linhas, e o casamento
- * é um join — em SQL isso é uma passada, em JS seriam 288 mil comparações puxadas
- * pela rede. E, mais importante, a regra fica calibrável por migration, sem
- * reimplantar a função a cada ajuste de limiar.
- */
-async function conciliar(supabase: any) {
-  const { data, error } = await supabase.rpc("estornos_conciliar");
-  if (error) throw new Error(`conciliar: ${error.message}`);
-  return data;
 }
 
 /* ---------------------------------- cron ---------------------------------- */
@@ -538,8 +493,12 @@ Deno.serve(async (req) => {
       // declarar a volta fechada. `completo:true` só desliga o relógio.
       const janelaCustom = !!(body?.desde || body?.ate);
       const semRelogio = janelaCustom || !!body?.completo;
+      // História pedida à mão vai sempre à API: o espelho não tem o que ninguém
+      // varreu, e quem pede um recorte quer a resposta do Asaas.
+      const fonte: "espelho" | "api" = body?.fonte === "api" || janelaCustom ? "api" : "espelho";
+      const escopo = escopoDa(fonte);
 
-      const estadoAnterior = await lerEstado(supabase);
+      const estadoAnterior = await lerEstado(supabase, escopo);
       const todas = fatiar(de, ate);
 
       // O cursor guarda a PRÓXIMA fatia pela data de início. Como a janela é relativa
@@ -549,19 +508,23 @@ Deno.serve(async (req) => {
       const partida = janelaCustom ? -1 : todas.findIndex((f) => f.de === cursorSalvo);
       const ordem = partida < 0 ? todas : [...todas.slice(partida), ...todas.slice(0, partida)];
 
-      let cobrancasVistas = 0, gravados = 0, removidos = 0;
+      let cobrancasVistas = 0, gravados = 0, removidos = 0, espelhoCurado = 0;
       let clientesResolvidos = 0, clientesFaltam = 0;
       let orcamentoClientes = TETO_CLIENTES; // da RODADA inteira, não de cada fatia
       let cursor = cursorSalvo || (ordem[0]?.de ?? de);
       const feitas: string[] = [];
 
       const resumo = () => ({
-        de, ate, cursor, fatias: todas.length, fatias_feitas: feitas.length,
+        primeira_rodada: String(estadoAnterior.detalhe?.primeira_rodada ?? "") || new Date(t0).toISOString(),
+        fonte, de, ate, cursor, fatias: todas.length, fatias_feitas: feitas.length,
         cobrancas: cobrancasVistas, estornos: gravados, clientes_faltando: clientesFaltam,
+        espelho_curado: espelhoCurado,
       });
 
-      /** Uma leva de cobranças vira estornos gravados — na hora, não no fim. */
-      const processar = async (pagamentos: any[]) => {
+      /** Uma leva de cobranças vira estornos gravados — na hora, não no fim.
+       *  `daApi`: a leva acabou de vir do Asaas. Só ela cura o espelho e só ela
+       *  apaga estorno sumido — ver `limparOrfaos`. */
+      const processar = async (pagamentos: any[], daApi: boolean) => {
         const cobrancas = new Map<string, any>();
         for (const p of pagamentos) if (p?.id) cobrancas.set(String(p.id), p);
 
@@ -579,7 +542,15 @@ Deno.serve(async (req) => {
         clientesFaltam = Math.max(clientesFaltam, clientes.faltam);
 
         gravados += await gravarEstornos(supabase, estornos, clientes.mapa);
-        removidos += await limparOrfaos(supabase, [...cobrancas.keys()], new Set(estornos.map((e) => e.id)));
+        if (daApi) {
+          removidos += await limparOrfaos(supabase, [...cobrancas.keys()], new Set(estornos.map((e) => e.id)));
+          // A cura é conveniência (a fonte "espelho" enxergar amanhã o que a API
+          // viu hoje); falhar nela não pode derrubar a rodada que já gravou.
+          espelhoCurado += await curarEspelhoDosEstornos(supabase, [...cobrancas.values()]).catch((e) => {
+            console.warn("estornos-sync: espelho não foi curado:", e instanceof Error ? e.message : e);
+            return 0;
+          });
+        }
         cobrancasVistas += cobrancas.size;
       };
 
@@ -587,9 +558,17 @@ Deno.serve(async (req) => {
       //     a única forma de o painel enxergar um mês antigo sem varrer o ano inteiro.
       //     Vem inteira em toda rodada porque é barata e traz a grande maioria: uma
       //     rodada que só conseguisse fazer isto já deixaria os totais em dia.
-      await processar(await asaasList("/payments", { status: "REFUNDED" }));
+      await processar(await asaasList("/payments", { status: "REFUNDED" }), true);
 
-      // (2) AS FATIAS DA JANELA — é aqui que os PARCIAIS aparecem, já que eles não têm
+      // (2) OS PARCIAIS. Na fonte "espelho", uma leitura local e pronto — a volta
+      //     se fecha sempre. Na fonte "api", as fatias da janela.
+      if (fonte === "espelho") {
+        await processar(await parciaisDoEspelho(supabase, de, ate), false);
+        feitas.push(...todas.map((f) => f.de));
+        cursor = todas[0]?.de ?? de;
+      }
+
+      // (2, api) AS FATIAS DA JANELA — é aqui que os PARCIAIS aparecem, já que eles não têm
       //     status próprio para filtrar e continuam RECEIVED/CONFIRMED na lista.
       /* O relógio PERGUNTA se a próxima fatia cabe, em vez de confiar num horário
        * fixo. Um "pare aos 80s" é o mesmo tipo de número que quebrou esta função:
@@ -598,18 +577,18 @@ Deno.serve(async (req) => {
        * corte se ajusta sozinho conforme a base cresce — e o 504 deixa de ser
        * possível, porque a rodada só começa trabalho que sabe terminar. */
       let fatiaMaisLenta = 0;
-      for (let i = 0; i < ordem.length; i++) {
+      for (let i = 0; fonte === "api" && i < ordem.length; i++) {
         const previsao = fatiaMaisLenta ? fatiaMaisLenta * FOLGA_FATIA : PALPITE_FATIA_MS;
         if (!semRelogio && decorrido() + previsao + RESERVA_FIM_MS > CORTE_GATEWAY_MS) break;
 
         const f = ordem[i];
         const marca = Date.now();
-        await processar(await asaasList("/payments", { "dueDate[ge]": f.de, "dueDate[le]": f.ate }));
+        await processar(await asaasList("/payments", { "dueDate[ge]": f.de, "dueDate[le]": f.ate }), true);
         fatiaMaisLenta = Math.max(fatiaMaisLenta, Date.now() - marca);
 
         feitas.push(f.de);
         cursor = ordem[(i + 1) % ordem.length].de;
-        if (!janelaCustom) await gravarEstado(supabase, resumo(), false);
+        if (!janelaCustom) await gravarEstado(supabase, escopo, resumo(), false);
       }
 
       const completou = !janelaCustom && feitas.length >= todas.length;
@@ -624,7 +603,7 @@ Deno.serve(async (req) => {
       const conciliacao = await conciliar(supabase);
 
       if (!janelaCustom) {
-        await gravarEstado(supabase, { ...resumo(), planilha: gravadasPlan }, completou);
+        await gravarEstado(supabase, escopo, { ...resumo(), planilha: gravadasPlan }, completou);
       }
 
       /* VERMELHO SÓ QUANDO O DESENHO PAROU DE DAR CONTA.
@@ -634,13 +613,20 @@ Deno.serve(async (req) => {
        * se fechar por um dia: aí as fatias deixaram de acompanhar o crescimento, que é
        * exatamente o que aconteceu em 04/09 sem ninguém ver. Isso não pode sair verde
        * só porque a função respondeu. */
+      /* O PRAZO É O DA CADÊNCIA. A fonte "espelho" roda três vezes ao dia e fecha
+       * a volta toda vez: 24h sem fechar é defeito. A "api" é semanal e pode levar
+       * mais de uma rodada para dar a volta: 8 dias. Sem nenhuma volta ainda, conta
+       * desde a primeira rodada, que fica anotada no estado. */
+      const prazoH = fonte === "api" ? 8 * 24 : 24;
       const ultimaCompleta = completou ? new Date().toISOString() : estadoAnterior.ultima_completa;
-      const atrasada = !janelaCustom &&
-        (!ultimaCompleta || Date.now() - new Date(ultimaCompleta).getTime() > 24 * 3600 * 1000);
+      const primeira = String(estadoAnterior.detalhe?.primeira_rodada ?? "") || new Date(t0).toISOString();
+      const desde = ultimaCompleta ?? primeira;
+      const atrasada = !janelaCustom && Date.now() - new Date(desde).getTime() > prazoH * 3600 * 1000;
 
       return json({
         ok: !atrasada, origem: "asaas",
         detalhe: {
+          fonte,
           janela: { de, ate },
           fatias: { total: todas.length, feitas: feitas.length, proxima: cursor },
           completou,
@@ -649,10 +635,14 @@ Deno.serve(async (req) => {
           cobrancas_visitadas: cobrancasVistas,
           estornos_gravados: gravados,
           estornos_removidos: removidos,
+          espelho_curado: espelhoCurado,
           clientes: { resolvidos: clientesResolvidos, faltam: clientesFaltam },
           planilha: { linhas: gravadasPlan },
         },
-        ...(atrasada ? { erro: "a volta completa não se fecha há mais de 24h — as fatias não estão acompanhando o volume." } : {}),
+        ...(atrasada
+          ? { erro: `a volta completa (fonte ${fonte}) não se fecha há mais de ${prazoH}h` +
+              (fonte === "api" ? " — as fatias não estão acompanhando o volume." : ".") }
+          : {}),
         conciliacao,
       }, atrasada ? 500 : 200);
     }

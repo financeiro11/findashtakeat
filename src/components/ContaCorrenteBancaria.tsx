@@ -788,7 +788,7 @@ export default function ContaCorrenteBancaria({ banco }: { banco: FonteCCKey }) 
       {fonte.sync && (
         <div className="flex items-center justify-end gap-3 border-b border-border/60 px-4 py-2">
           <span className="text-[11px] text-muted-foreground">
-            sync 1×/dia{saldo?.atualizado_em ? ` · ${fmtHora(saldo.atualizado_em)}` : ""}
+            sync 3×/dia{saldo?.atualizado_em ? ` · ${fmtHora(saldo.atualizado_em)}` : ""}
           </span>
           <button
             onClick={sincronizar}

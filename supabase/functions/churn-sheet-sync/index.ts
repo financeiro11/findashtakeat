@@ -19,8 +19,9 @@
 // bases, o que dá o ano inteiro e não depende de ninguém deixar o dropdown no lugar certo.
 //
 // Fórmulas replicadas (conferidas contra Julho/26 na planilha):
-//   # Cancelamentos   COUNTIF('CHURNS'!K = mês)                    → 142
-//   $ Cancelamentos   SUMIFS('CHURNS'!E ; K = mês)                 → R$ 50.477,81
+//   # Cancelamentos   COUNTIF('CHURNS'!Mês = mês)                  → 142
+//   $ Cancelamentos   SUMIFS('CHURNS'!TM MRR ; Mês = mês)          → R$ 50.477,81
+//   (letras de coluna mudam — a sync acha cada uma pelo cabeçalho, ver CAB_*)
 //   # / $ Downsell    COUNTIF/SUMIF('DOWNSELL'!F = mês ; D)        → 17 / R$ 1.751,21
 //   # / $ Upsell      'UPSELL': B="Upsell" E H="sim" E L=mês ; J   → 74 / R$ 9.555,90
 //   # / $ Reativações 'REATIVAÇÕES': D="sim" E F=mês ; C           → 5 / R$ 1.761,33
@@ -70,12 +71,40 @@ const META_PCT: Record<number, number> = {
 const SETORES = ["Onboarding", "Sucesso", "Comercial"] as const;
 const NIVEIS = ["P", "M", "G", "GG"] as const;
 
-// Índices de coluna (0-based) de cada base.
-const C_CHURNS = { nome: 0, cnpj: 1, valor_plano: 3, tm_mrr: 4, qualificacao: 5, fechamento: 9, mes: 10, setor: 11 };
-const C_DOWNSELL = { tm_mrr: 3, mes: 5 };
-const C_UPSELL = { plano: 1, pagamento: 7, mrr: 9, mes: 11 };
-const C_REATIVACAO = { tm_mrr: 2, pago: 3, mes: 5 };
+// Colunas de cada base, achadas PELO CABEÇALHO (nome normalizado, casamento exato).
+// Até 14/09/2026 eram índices fixos, e a aba de churns ganhou três colunas no meio ("Data de
+// Criação", "Data - Solicitação", "mês de solicitação"): o índice do Mês passou a cair na
+// Data de Fechamento, nenhuma linha casava com o mês e o cancelamento zerou em 2026 inteiro
+// SEM ERRO — o churn de /assinaturas ficou negativo. Agora coluna que some derruba a sync
+// com o nome dela na mensagem. Casamento exato porque "mês de solicitação" ≠ "Mês" e
+// "TM MRR" ≠ "MRR".
+const CAB_CHURNS = {
+  nome: "Estabelecimento", cnpj: "CNPJ", valor_plano: "Valor Plano", tm_mrr: "TM MRR",
+  qualificacao: "Qualificação", fechamento: "Data de Fechamento", mes: "Mês", setor: "Setor",
+};
+const CAB_DOWNSELL = { tm_mrr: "TM MRR", mes: "Mês" };
+const CAB_UPSELL = { plano: "Plano", pagamento: "Pagamento Realizado", mrr: "MRR", mes: "Mês" };
+const CAB_REATIVACAO = { tm_mrr: "TM MRR", pago: "Pago?", mes: "Mês" };
+// DADOS tem cabeçalho mesclado ("[merged] Receita Inicial"…) e nunca mudou de forma: fica por índice.
 const C_DADOS = { mes: 0, mrr: 1, clientes: 2, tm: 3, p: 4, m: 5, g: 6, gg: 7 };
+
+type Colunas<T> = { [K in keyof T]: number };
+
+// Procura, nas primeiras linhas, a que contém TODOS os cabeçalhos pedidos.
+function colunas<T extends Record<string, string>>(rows: any[][], pedidos: T, aba: string): Colunas<T> {
+  const alvos = Object.entries(pedidos);
+  for (const linha of rows.slice(0, 10)) {
+    const cab = (linha ?? []).map(chave);
+    const idx = alvos.map(([, rotulo]) => cab.indexOf(chave(rotulo)));
+    if (idx.every((i) => i >= 0)) {
+      return Object.fromEntries(alvos.map(([k], i) => [k, idx[i]])) as Colunas<T>;
+    }
+  }
+  const melhor = (rows.slice(0, 10).map((l) => (l ?? []).map(chave)))
+    .reduce((a, c) => (c.filter((x) => x).length > a.filter((x) => x).length ? c : a), [] as string[]);
+  const faltam = alvos.filter(([, r]) => !melhor.includes(chave(r))).map(([, r]) => `"${r}"`);
+  throw new Error(`Aba "${aba}": cabeçalho não encontrado — falta ${faltam.join(", ")}. A planilha mudou de layout?`);
+}
 
 /* ------------------------------- helpers ------------------------------- */
 const semAcento = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "");
@@ -100,22 +129,31 @@ const pctDe = (a: number, b: number) => div(a, b) * 100;
 
 // A última coluna que o cálculo usa em cada base — ver os índices `C_*` acima. Pedir só
 // até ela evita arrastar as colunas de anotação que o time mantém à direita.
-const ULTIMA_COLUNA = { dados: "H", churns: "L", downsell: "F", upsell: "L", reativacoes: "F" };
+// Com folga: as colunas são achadas pelo cabeçalho, e a de churns já cresceu uma vez.
+const ULTIMA_COLUNA = { dados: "H", churns: "T", downsell: "J", upsell: "P", reativacoes: "J" };
 const LINHAS = 20_000;
 
 const faixa = (aba: string, ultima: string) => `${refAba(aba)}!A1:${ultima}${LINHAS}`;
 
 // Resolve o nome real da aba (a planilha tem "CÓPIA DE 2026 CHURNS", "UPSELL 2" etc. —
-// por isso o match é exato sobre o nome normalizado, não "contém").
+// por isso o match é exato sobre o nome normalizado, não "contém"). Aceita um sufixo entre
+// colchetes: em 15/09/2026 a aba virou "2026 CHURNS [AUTOMÁTICA]" e a sync caiu com 500.
 function acharAba(nomes: string[], alvo: string): string {
   const k = chave(alvo);
-  const achado = nomes.find((n) => chave(n) === k);
+  const achado = nomes.find((n) => chave(n) === k) ??
+    nomes.find((n) => /^\[[^\]]*\]$/.test(chave(n).slice(k.length).trim()) && chave(n).startsWith(k + " "));
   if (!achado) throw new Error(`Aba "${alvo}" não encontrada na planilha. Abas: ${nomes.join(" | ")}`);
   return achado;
 }
 
 /* ------------------------------- cálculo de um mês ------------------------------- */
-type Bases = { dados: any[][]; churns: any[][]; downsell: any[][]; upsell: any[][]; reativacoes: any[][] };
+type Bases = {
+  dados: any[][]; churns: any[][]; downsell: any[][]; upsell: any[][]; reativacoes: any[][];
+  col: {
+    churns: Colunas<typeof CAB_CHURNS>; downsell: Colunas<typeof CAB_DOWNSELL>;
+    upsell: Colunas<typeof CAB_UPSELL>; reativacoes: Colunas<typeof CAB_REATIVACAO>;
+  };
+};
 
 function linhaDoMes(dados: any[][], mes: number): any[] | null {
   const alvo = chave(MESES_PT[mes - 1]);
@@ -129,6 +167,7 @@ function calcularMes(mes: number, ano: number, b: Bases) {
   if (!mrr_inicio) return null; // mês ainda sem base fechada na planilha
 
   const doMes = (rows: any[][], col: number) => rows.filter((r) => num(r?.[col]) === mes);
+  const { churns: C_CHURNS, downsell: C_DOWNSELL, upsell: C_UPSELL, reativacoes: C_REATIVACAO } = b.col;
 
   // --- bases do mês ---
   const cancelamentos = doMes(b.churns, C_CHURNS.mes).filter((r) => String(r[C_CHURNS.nome] ?? "").trim() !== "");
@@ -278,7 +317,15 @@ Deno.serve(async (req) => {
       faixa(nomeUpsell, ULTIMA_COLUNA.upsell),
       faixa(nomeReativacoes, ULTIMA_COLUNA.reativacoes),
     ]);
-    const bases: Bases = { dados, churns, downsell, upsell, reativacoes };
+    const bases: Bases = {
+      dados, churns, downsell, upsell, reativacoes,
+      col: {
+        churns: colunas(churns, CAB_CHURNS, nomeChurns),
+        downsell: colunas(downsell, CAB_DOWNSELL, nomeDownsell),
+        upsell: colunas(upsell, CAB_UPSELL, nomeUpsell),
+        reativacoes: colunas(reativacoes, CAB_REATIVACAO, nomeReativacoes),
+      },
+    };
 
     // Snapshot de recorrência: serve para (a) conferir a ponte entre as duas planilhas — o
     // "MRR início do mês" de M é a base fechada em M-1 — e (b) trazer o MRR por nível dessa
@@ -317,11 +364,21 @@ Deno.serve(async (req) => {
       return json({
         abas_todas: nomes,
         abas_usadas: { nomeDados, nomeChurns, nomeDownsell, nomeUpsell, nomeReativacoes },
+        colunas: bases.col,
         meses: calculados.map((c) => ({
           competencia: c.competencia, mrr_inicio: c.base.mrr_inicio,
           cancelamentos: c.kpis.cancel_qtd, churn: c.kpis.churn_valor,
         })),
       });
+    }
+
+    // Desde 18/09/2026 o churn_snapshot é montado do Takeat OS (os_churn_para_snapshot, na
+    // cópia diária do OS). Gravar a planilha por cima faria a tela voltar a outro número.
+    // "preview" continua respondendo, para conferir a planilha contra o OS quando precisar.
+    if (!body?.forcar_planilha) {
+      return json({
+        error: "Desligada: o churn do Hub vem do Takeat OS desde 18/09/2026. Use action 'preview' para conferir a planilha.",
+      }, 410);
     }
 
     const agora = new Date().toISOString();

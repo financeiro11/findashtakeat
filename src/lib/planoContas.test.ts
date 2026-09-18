@@ -267,6 +267,11 @@ describe("sinais", () => {
     expect(sinaisDaCategoria(no(c, 500), "caixa", null, fmt).map((s) => s.tipo)).not.toContain("sem_de_para");
   });
 
+  it("categoria marcada como fora de propósito não é acusada de estar fora do DE-PARA", () => {
+    const c = cat("1.04.94", "Transferência de Entrada*", { rubrica_dre: null });
+    expect(sinaisDaCategoria(no(c, 500), "competencia", null, fmt, true).map((s) => s.tipo)).not.toContain("sem_de_para");
+  });
+
   it("não acusa nada em categoria zerada", () => {
     const c = cat("2.04.09", "3.1.2.19 Outros", { rubrica_dre: null, inativa: true });
     expect(sinaisDaCategoria(no(c, 0), "competencia", null, fmt)).toEqual([]);

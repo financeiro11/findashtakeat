@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { KpiCard } from "@/components/ui/kpi-card";
 import { comValorExato } from "@/components/ValorExato";
+import { fotoAtrasada, lidoDoAsaas, tituloLidoDoAsaas, type LidoDoAsaas } from "@/lib/asaasFrescor";
 
 /* brlStr arredonda pra unidade; na tela usamos brl, que é o mesmo texto num
    <span> revelando os centavos ao passar o mouse. */
@@ -37,20 +38,36 @@ export default function Asaas() {
 
   // "De quando são os dados" NÃO é o gerado_em do snapshot: ele muda a cada
   // Recalcular, que só refaz conta local — clicava-se no botão e a tela dizia
-  // "atualizado agora" sem nenhum dado novo do Asaas. Quem responde de verdade é a
-  // última puxada gravada em asaas_sync_estado (escopo payment:<mês>).
-  const [dadosDe, setDadosDe] = useState<string | null>(null);
+  // "atualizado agora" sem nenhum dado novo do Asaas. Quem responde de verdade é
+  // `asaas_sync_estado`: a última puxada do mês (payment:<mês>) ou o último aviso
+  // do Asaas (webhook), o que for mais recente — ver `lidoDoAsaas`.
+  const [lido, setLido] = useState<LidoDoAsaas | null>(null);
 
-  const load = async () => {
+  const load = async (podeRecalcular = true) => {
     setLoading(true);
     const [{ data }, { data: est }] = await Promise.all([
       supabase.from("asaas_snapshots" as any).select("dados,gerado_em").eq("referencia", ref).maybeSingle(),
-      supabase.from("asaas_sync_estado" as any).select("ultima_incremental,ultima_completa").eq("escopo", `payment:${ref}`).maybeSingle(),
+      supabase.from("asaas_sync_estado" as any).select("escopo,ultima_incremental,ultima_completa")
+        .in("escopo", [`payment:${ref}`, "webhook"]),
     ]);
+    type Estado = { escopo: string; ultima_incremental: string | null; ultima_completa: string | null };
+    const linhas = ((est ?? []) as unknown as Estado[]).map((e) => ({
+      escopo: String(e.escopo), ultima_incremental: e.ultima_incremental ?? e.ultima_completa ?? null,
+    }));
+    const lidoAgora = lidoDoAsaas(linhas);
     setDados((data as any)?.dados ?? null);
     setGeradoEm((data as any)?.gerado_em ?? null);
-    setDadosDe((est as any)?.ultima_incremental ?? (est as any)?.ultima_completa ?? null);
+    setLido(lidoAgora);
     setLoading(false);
+
+    /* A FOTO ANDA SOZINHA (16/09/2026). Com o webhook o espelho muda o dia todo,
+       e a foto só era refeita pelas varreduras — a tela mostrava o recebido das
+       17:00 às 21h. Recalcular é local (nenhuma requisição ao Asaas) e só roda
+       quando chegou algo DEPOIS da foto; uma vez por abertura, sem laço. Mês
+       nunca espelhado não tem foto e fica como está (o `recalcular` recusa). */
+    if (podeRecalcular && (data as any)?.dados && fotoAtrasada((data as any)?.gerado_em, lidoAgora)) {
+      void recalcular(true);
+    }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [ref]);
 
@@ -61,7 +78,7 @@ export default function Asaas() {
    * 20260903250000), que já recalculam ao terminar. O botão "Atualizar do Asaas"
    * foi removido de propósito: era o caminho que gastava cota na mão.
    */
-  const recalcular = async () => {
+  const recalcular = async (silencioso = false) => {
     setOcupado("recalcular");
     try {
       const { data, error } = await supabase.functions.invoke("asaas-sync", {
@@ -90,12 +107,16 @@ export default function Asaas() {
       if ((data as any)?.error) throw new Error((data as any).error);
 
       const aviso = (data as any)?.aviso;
-      if (aviso) toast.warning(aviso, { duration: 7000 });
-      else toast.success("Números recalculados.");
-      await load();
+      if (!silencioso) {
+        if (aviso) toast.warning(aviso, { duration: 7000 });
+        else toast.success("Números recalculados.");
+      }
+      // `false`: o recarregamento depois de recalcular nunca dispara outro.
+      await load(false);
     } catch (e: any) {
       console.error("[asaas-sync] erro no handler", e);
-      toast.error("Falha: " + e.message, { duration: 8000 });
+      // O automático falhar não é notícia: a tela segue com a foto anterior.
+      if (!silencioso) toast.error("Falha: " + e.message, { duration: 8000 });
     } finally { setOcupado(null); }
   };
 
@@ -108,9 +129,9 @@ export default function Asaas() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Asaas</h2>
           <p className="text-sm text-muted-foreground">
-            Recebimentos, assinaturas (MRR/ARR) e NF-e do Asaas · atualização automática às 07:45, 12:30 e 17:00.
-            {dadosDe
-              ? <span className="num"> · dados do Asaas de {new Date(dadosDe).toLocaleString("pt-BR")}</span>
+            Recebimentos, assinaturas (MRR/ARR) e NF-e do Asaas · o Asaas avisa a cada mudança; varredura de conferência às 07:45, 12:30 e 17:00.
+            {lido
+              ? <span className="num" title={tituloLidoDoAsaas(lido)}> · dados do Asaas de {new Date(lido.em).toLocaleString("pt-BR")}</span>
               : geradoEm && <span className="num"> · calculado em {new Date(geradoEm).toLocaleString("pt-BR")}</span>}
           </p>
         </div>
@@ -124,7 +145,7 @@ export default function Asaas() {
           </select>
           <button
             className="ghost-btn h-9"
-            onClick={recalcular}
+            onClick={() => void recalcular()}
             disabled={ocupado !== null}
             title="Refaz as contas a partir da cópia local — não consulta o Asaas."
           >

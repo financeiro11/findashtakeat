@@ -10,6 +10,7 @@ export const ROTAS: Record<string, { crumbs: string[]; context?: string }> = {
   "/caixa": { crumbs: ["Início", "Caixa"], context: "Panorama do caixa · Omie" },
   "/caixa/conta-corrente/sicoob": { crumbs: ["Início", "Caixa", "Conta Corrente"], context: "Extrato Sicoob" },
   "/caixa/conta-corrente/asaas": { crumbs: ["Início", "Caixa", "Conta Corrente"], context: "Extrato Asaas" },
+  "/indicadores": { crumbs: ["Início", "Metas & Indicadores"], context: "Orçado × realizado de cada canal · espelho do Takeat OS" },
   "/briefing": { crumbs: ["Início", "Briefing Diário"], context: "Resumo do dia · agenda · e-mails · notícias" },
   "/briefing/novidades": { crumbs: ["Início", "Briefing Diário", "Novidades do Hub"], context: "O que mudou na própria ferramenta · lido dos commits publicados" },
   "/design-system": { crumbs: ["Início", "Design System"] },

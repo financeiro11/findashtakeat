@@ -79,6 +79,12 @@ describe("motivoBloqueio", () => {
     expect(motivoBloqueio(l)).toMatch(/estornada/i);
   });
 
+  it("barra a cobrança apagada no Asaas, nem a avulsa nem a antes do pagamento alcançam", () => {
+    const l = linha({ status_asaas: "DELETED" });
+    expect(motivoBloqueio(l)).toMatch(/exclu[ií]da/i);
+    expect(motivoBloqueio(l, { avulsa: true, antesDoPagamento: true })).toMatch(/exclu[ií]da/i);
+  });
+
   it("barra o que já tem nota, dos dois lados", () => {
     expect(motivoBloqueio(linha({ situacao: "emitida_omie" }))).toMatch(/Omie/);
     expect(motivoBloqueio(linha({ situacao: "emitida_asaas" }))).toMatch(/Asaas/);

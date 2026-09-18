@@ -76,7 +76,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { requireUser } from "../_shared/auth.ts";
 import { generateJSON, generateText, MODELO_LITE } from "../_shared/gemini.ts";
 import {
-  avaliar, chaveDoProduto, classificar, condicaoDoTitulo, deveAvisar, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, fonteForaDoAssunto, fonteLabel, lerSpecs, MIN_AVALIACOES, nomeNoEndereco, norm, pisoDePreco, somarRendimento, sugerirTeto, textoWhatsLote, totalDaOferta, type RendimentoFonte,
+  agruparIguais, avaliar, chaveDoProduto, classificar, condicaoDoTitulo, deveAvisar, disponibilidade, DIAS_PARA_SUGERIR, economiaDe, emCentavos, fonteForaDoAssunto, fonteLabel, lerSpecs, mapaDeJuntados, MIN_AVALIACOES, nomeNoEndereco, norm, pisoDePreco, somarRendimento, sugerirTeto, textoWhatsLote, totalDaOferta, validarSugestoesDeIguais, type RendimentoFonte,
   type AlvoSpecs, type OfertaBruta, type ParaWhats, type Preferencias, type TipoAlerta,
 } from "../_shared/radar-precos.ts";
 import { enviarWhatsApp } from "../_shared/whatsapp.ts";
@@ -1175,6 +1175,21 @@ async function irmasDaMesmaOferta(supabase: any, alvoId: string, of: any): Promi
 }
 
 /**
+ * O DESFAZER DO 👎: os achados que o voto descartou voltam ao status que
+ * tinham. Só os que o VOTO descartou (`status_antes_do_voto` preenchido) —
+ * um achado que a conferência descartou por esgotado continua morto.
+ */
+async function devolverAchados(supabase: any, ofertaIds: number[]): Promise<void> {
+  if (!ofertaIds.length) return;
+  for (const st of ["a_confirmar", "novo", "visto"]) {
+    const { error } = await supabase.from("facilities_radar_alertas")
+      .update({ status: st, status_antes_do_voto: null })
+      .in("oferta_id", ofertaIds).eq("status", "descartado").eq("status_antes_do_voto", st);
+    if (error) console.error("devolver achado do 👎", error.message);
+  }
+}
+
+/**
  * A partir de quanto abaixo dos irmãos vale perguntar "por que está barato?".
  *
  * A pergunta só faz sentido quando há um desvio a explicar. Feita sobre um preço
@@ -1802,10 +1817,15 @@ async function varrerAlvo(
      facilities_radar_feedback. Erro aqui não pode derrubar a varredura por um
      bônus de ranking — degrada para "sem preferência" e segue. */
   let prefs: Preferencias = { marcasGostei: new Set(), vendedoresGostei: new Set() };
+  /* O ANÚNCIO RECUSADO NÃO VIRA ACHADO. Continua gravado e na curva (o preço
+     dele é preço de mercado), mas avisar dele seria gastar crédito conferindo
+     o estoque de algo que a pessoa já disse que não compra. */
+  const recusadasPeloVoto = new Set<number>();
   try {
-    const { data: gostei } = await supabase.from("facilities_radar_feedback")
-      .select("marca, vendedor").eq("alvo_id", alvo.id).eq("sinal", "gostei");
-    for (const g of gostei ?? []) {
+    const { data: votos } = await supabase.from("facilities_radar_feedback")
+      .select("oferta_id, sinal, marca, vendedor").eq("alvo_id", alvo.id);
+    for (const g of votos ?? []) {
+      if (g.sinal === "nao_gostei") { recusadasPeloVoto.add(Number(g.oferta_id)); continue; }
       if (g.marca) prefs.marcasGostei.add(g.marca);
       if (g.vendedor) prefs.vendedoresGostei.add(g.vendedor);
     }
@@ -1943,7 +1963,7 @@ async function varrerAlvo(
     }
 
     // Só quem cabe no teto pode virar aviso. O resto só alimenta a curva.
-    if (!dentroDoTeto) continue;
+    if (!dentroDoTeto || recusadasPeloVoto.has(Number(linha.id))) continue;
     const classe = classificar(av.comparavel, precoAlvo, (hist ?? []) as any);
     if (classe) candidatos.push({ ofertaId: linha.id, titulo: o.titulo, total: av.total, comparavel: av.comparavel, frete, classe });
   }
@@ -2254,11 +2274,20 @@ Deno.serve(async (req) => {
     /* ---------------------------------------------------- classificar */
     /* 👍/👎 num anúncio — o insumo para o radar aprender preferência sem que
        ninguém preencha formulário nenhum.
-       SEM EFEITO PRÓPRIO NA HORA. Isto só grava. 👍 entra no bônus de ranking
-       que `avaliar()` já aplica na PRÓXIMA varredura (ver `Preferencias`); 👎
-       só filtra depois que a PESSOA confirmar a proposta abaixo — nunca sozinho,
-       pelo mesmo motivo do Cartão e das Tarefas: um padrão de três pode ser
-       coincidência, e quem decide se é regra é quem está comprando.
+       👍 entra no bônus de ranking que `avaliar()` já aplica na PRÓXIMA
+       varredura (ver `Preferencias`).
+       👎 TIRA O ANÚNCIO DE CENA NA HORA (desde 17/09/2026): o painel deixa de
+       contá-lo e os achados abertos dele viram `descartado` — quem olhou a foto
+       e disse "não" já decidiu sobre AQUELE produto. O que continua precisando
+       da PESSOA é a generalização para a marca (a proposta abaixo), pelo mesmo
+       motivo do Cartão e das Tarefas: um padrão de três pode ser coincidência.
+       O VOTO VALE PARA AS CÓPIAS. O mesmo título na mesma condição (ou o que
+       a pessoa juntou à mão em `facilities_radar_iguais`), noutra
+       loja ou comparador, é o mesmo produto — é assim que a tela os agrupa, e
+       recusar a cabeça do grupo para ver a gêmea subir no lugar seria pedir a
+       mesma decisão duas vezes. As cópias NÃO levam marca nem vendedor no voto:
+       um clique não pode contar como três recusas da marca, nem virar
+       preferência por uma loja que a pessoa nem viu.
        `sinal: null` DESFAZ o voto — é o que o clique no ícone já ativo dispara
        no front, sem precisar de uma ação separada de "remover". */
     if (action === "classificar") {
@@ -2268,27 +2297,79 @@ Deno.serve(async (req) => {
 
       const { data: oferta, error: erroOferta } = await supabase
         .from("facilities_radar_ofertas")
-        .select("id, alvo_id, fonte, vendedor, condicao, specs_lidas")
+        .select("id, alvo_id, titulo, fonte, vendedor, condicao, specs_lidas")
         .eq("id", ofertaId).maybeSingle();
       if (erroOferta) throw new Error(erroOferta.message);
       if (!oferta) return json({ ok: false, erro: "Anúncio não encontrado — pode ter saído da lista." }, 404);
 
+      /* Cópia é o que `agruparIguais` põe no mesmo grupo — a MESMA regra da
+         tela, incluindo o que a pessoa juntou à mão (`facilities_radar_iguais`,
+         que vale até entre condições diferentes). Por isso a condição não
+         filtra a consulta: quem separa novo de usado é a regra. */
+      const [{ data: irmas, error: erroIrmas }, { data: iguais, error: erroIguais }] = await Promise.all([
+        supabase.from("facilities_radar_ofertas")
+          .select("id, fonte, condicao, titulo")
+          .eq("alvo_id", oferta.alvo_id).eq("ativo", true)
+          .neq("id", ofertaId),
+        supabase.from("facilities_radar_iguais").select("titulo, grupo").eq("alvo_id", oferta.alvo_id),
+      ]);
+      if (erroIrmas) throw new Error(erroIrmas.message);
+      if (erroIguais) throw new Error(erroIguais.message);
+      const grupoDoClicado = agruparIguais([oferta, ...(irmas ?? [])], mapaDeJuntados(iguais))
+        .find((g) => g[0].id === ofertaId) ?? [oferta];
+      const copias = grupoDoClicado.filter((x) => x.id !== ofertaId) as NonNullable<typeof irmas>;
+      const ids = [ofertaId, ...copias.map((x) => x.id)];
+
+      /* O voto anterior do anúncio clicado é o que as cópias herdaram — desfazer
+         ou trocar só mexe em cópia que ainda está com ESSE voto, para não apagar
+         uma decisão que a pessoa tomou sobre a cópia em separado. */
+      const { data: antes } = await supabase.from("facilities_radar_feedback")
+        .select("oferta_id, sinal").in("oferta_id", ids);
+      const sinalAntes = (antes ?? []).find((v) => v.oferta_id === ofertaId)?.sinal ?? null;
+      const alvoDoVoto = new Set([ofertaId, ...(antes ?? [])
+        .filter((v) => v.oferta_id !== ofertaId && v.sinal === sinalAntes).map((v) => v.oferta_id)]);
+      const semVoto = new Set(copias.map((x) => x.id).filter((id) => !(antes ?? []).some((v) => v.oferta_id === id)));
+      const afetadas = ids.filter((id) => alvoDoVoto.has(id) || semVoto.has(id));
+
       if (!sinal) {
-        const { error } = await supabase.from("facilities_radar_feedback").delete().eq("oferta_id", ofertaId);
+        const apagar = ids.filter((id) => alvoDoVoto.has(id));
+        const { error } = await supabase.from("facilities_radar_feedback").delete().in("oferta_id", apagar);
         if (error) throw new Error(error.message);
-        return json({ ok: true, sinal: null, duracao_ms: Date.now() - t0 });
+        if (sinalAntes === "nao_gostei") await devolverAchados(supabase, apagar);
+        return json({ ok: true, sinal: null, ofertas: apagar, duracao_ms: Date.now() - t0 });
       }
 
       // A marca sai da FOTOGRAFIA já tirada na varredura (`specs_lidas`), não de
       // reler o título agora — é o mesmo valor que `avaliar()` viu na hora.
       const marca: string | null = (oferta.specs_lidas as any)?.marca ?? null;
       const vendedor = oferta.vendedor ? norm(oferta.vendedor) : null;
-      const { error: erroUpsert } = await supabase.from("facilities_radar_feedback").upsert({
-        alvo_id: oferta.alvo_id, oferta_id: ofertaId, sinal,
-        marca, vendedor, fonte: oferta.fonte, condicao: oferta.condicao,
-        criado_por: quem,
-      }, { onConflict: "oferta_id" });
+      const { error: erroUpsert } = await supabase.from("facilities_radar_feedback").upsert(
+        afetadas.map((id) => {
+          const c = id === ofertaId ? oferta : copias.find((x) => x.id === id)!;
+          return {
+            alvo_id: oferta.alvo_id, oferta_id: id, sinal,
+            marca: id === ofertaId ? marca : null,
+            vendedor: id === ofertaId ? vendedor : null,
+            fonte: c.fonte, condicao: c.condicao,
+            criado_por: quem,
+          };
+        }),
+        { onConflict: "oferta_id" },
+      );
       if (erroUpsert) throw new Error(erroUpsert.message);
+
+      if (sinal === "nao_gostei") {
+        /* Um status por vez: o `status_antes_do_voto` precisa guardar o valor
+           de CADA linha, e o update do PostgREST não referencia a coluna. */
+        for (const st of ["a_confirmar", "novo", "visto"]) {
+          const { error } = await supabase.from("facilities_radar_alertas")
+            .update({ status: "descartado", status_antes_do_voto: st, visto_em: new Date().toISOString() })
+            .in("oferta_id", afetadas).eq("status", st);
+          if (error) console.error("descartar achado do 👎", error.message);
+        }
+      } else if (sinalAntes === "nao_gostei") {
+        await devolverAchados(supabase, afetadas.filter((id) => alvoDoVoto.has(id)));
+      }
 
       /* O PADRÃO SÓ SE PROPÕE EM CIMA DE 👎 COM MARCA CONHECIDA. Sem marca não
          há o que generalizar — ficaria só na tabela, para o dia em que o
@@ -2303,12 +2384,108 @@ Deno.serve(async (req) => {
           const jaExclui = ((alvoAtual?.specs as any)?.termos_proibidos ?? [])
             .some((t: string) => norm(t) === marca);
           if (!jaExclui) {
-            return json({ ok: true, sinal, marca, duracao_ms: Date.now() - t0, proposta: { marca, contagem: count } });
+            return json({ ok: true, sinal, marca, ofertas: afetadas, duracao_ms: Date.now() - t0, proposta: { marca, contagem: count } });
           }
         }
       }
 
-      return json({ ok: true, sinal, marca, duracao_ms: Date.now() - t0 });
+      return json({ ok: true, sinal, marca, ofertas: afetadas, duracao_ms: Date.now() - t0 });
+    }
+
+    /* -------------------------------------------------- sugerir iguais */
+    /* O MESMO PRODUTO EM LINHAS SEPARADAS. Cada comparador corta o título num
+       ponto diferente, e `agruparIguais` não junta por semelhança (um título
+       curto engoliria modelos distintos). A IA lê os títulos e PROPÕE; a
+       `validarSugestoesDeIguais` descarta o que os títulos contradizem; quem
+       grava a junção é a pessoa, pelo mesmo "Juntar" da tabela.
+       Por clique e nunca na varredura: a rodada já corre contra o relógio do
+       worker, e junção errada aplicada sozinha some com um modelo sem ninguém ver. */
+    if (action === "sugerir_iguais") {
+      const alvoId = String(body?.alvo_id ?? "");
+      if (!alvoId) return json({ ok: false, erro: "Informe o alvo." }, 400);
+
+      const [{ data: alvo }, { data: ofs, error: erroOfs }, { data: iguais }, { data: recusas }] = await Promise.all([
+        supabase.from("facilities_radar_alvos").select("titulo").eq("id", alvoId).maybeSingle(),
+        supabase.from("facilities_radar_ofertas")
+          .select("id, titulo, condicao, fonte, vendedor, preco, preco_total, imagem_url")
+          .eq("alvo_id", alvoId).eq("ativo", true).not("disponivel", "is", false)
+          .order("preco_total", { ascending: true }).limit(60),
+        supabase.from("facilities_radar_iguais").select("titulo, grupo").eq("alvo_id", alvoId),
+        supabase.from("facilities_radar_feedback").select("oferta_id").eq("alvo_id", alvoId).eq("sinal", "nao_gostei"),
+      ]);
+      if (!alvo) return json({ ok: false, erro: "Alvo não encontrado." }, 400);
+      if (erroOfs) throw new Error(erroOfs.message);
+
+      // Uma linha por grupo JÁ formado — é o que a tabela mostra, e é entre
+      // essas linhas que falta juntar. O recusado nem entra.
+      const recusadas = new Set((recusas ?? []).map((r) => Number(r.oferta_id)));
+      const cabecas = agruparIguais((ofs ?? []).filter((o) => !recusadas.has(o.id)), mapaDeJuntados(iguais))
+        .map((g) => g[0]);
+      if (cabecas.length < 2) {
+        return json({ ok: true, pode: false, texto: "Há uma linha só na tabela — nada para juntar." });
+      }
+
+      const prazoIA = prazoDeIA();
+      if (prazoIA == null) return json({ ok: false, erro: "sem tempo de worker para a sugestão agora — tente de novo" });
+
+      const lista = cabecas.map((o, i) =>
+        `${i}. ${o.titulo} | ${o.condicao} | ${o.vendedor ?? fonteLabel(o.fonte)} | R$ ${Math.round(Number(o.preco_total ?? o.preco))}`,
+      ).join("\n");
+      const chamar = (ms: number) => comPrazo(generateJSON<{ grupos: { indices: number[]; porque: string }[] }>({
+        model: MODELO_LITE,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Você recebe anúncios de lojas e comparadores brasileiros, numerados, e aponta quais são " +
+              "EXATAMENTE o mesmo produto (mesmo modelo e mesma configuração) vendido em lugares diferentes.\n" +
+              "REGRAS:\n" +
+              "- Títulos costumam vir cortados ('SSD 512...') ou com palavras a mais; isso não os torna diferentes.\n" +
+              "- Modelo, processador, memória, armazenamento, tamanho de tela, cor ou capacidade diferentes = produtos diferentes.\n" +
+              "- Mesma linha de produto não basta (VivoBook 15 com i5 e com Ryzen são diferentes).\n" +
+              "- Na dúvida, NÃO junte. Anúncio que não tem par fica de fora.\n" +
+              "- Cada anúncio aparece em no máximo um grupo. Grupo tem 2 ou mais índices.\n" +
+              "- `porque` é UMA frase curta, em português do Brasil, dizendo o que os identifica como o mesmo.\n" +
+              "- Nenhum par? Devolva `grupos` vazio.",
+          },
+          { role: "user", content: `Procurando: ${alvo.titulo}\n\nAnúncios:\n${lista}` },
+        ],
+        responseSchema: {
+          type: "object",
+          properties: {
+            grupos: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { indices: { type: "array", items: { type: "integer" } }, porque: { type: "string" } },
+                required: ["indices", "porque"],
+              },
+            },
+          },
+          required: ["grupos"],
+        },
+        temperature: 0.1,
+        thinking: "low",
+      }), ms, "a sugestão de junção pela IA");
+
+      const r = await duasChancesDeIA(chamar, prazoIA, "sugestão de junção");
+      if (!r.ok) {
+        return json({ ok: false, erro: `não deu para sugerir agora: ${r.cru}${r.tentativas > 1 ? " (falhou nas 2 tentativas)" : ""}` });
+      }
+      const propostas = r.valor?.grupos ?? [];
+      const validas = validarSugestoesDeIguais(cabecas.map((o) => o.titulo), propostas);
+      return json({
+        ok: true,
+        pode: true,
+        linhas: cabecas.length,
+        // Quantas a trava barrou: a tela diz, para ninguém achar que a IA não viu.
+        barradas: propostas.length - validas.length,
+        sugestoes: validas.map((v) => ({
+          porque: v.porque,
+          ofertas: v.indices.map((i) => cabecas[i]),
+        })),
+        duracao_ms: Date.now() - t0,
+      });
     }
 
     /* -------------------------------------------------- sugerir busca */
@@ -2781,7 +2958,7 @@ Deno.serve(async (req) => {
           ? al.texto + (c.observacao ? ` · ${c.observacao}` : "")
           : al.texto;
 
-        await supabase.from("facilities_radar_alertas").update({
+        const { data: aindaAberto } = await supabase.from("facilities_radar_alertas").update({
           /* Na reconferência o STATUS NÃO VOLTA A `novo`. O achado já foi visto;
              remarcá-lo como novo faria o selo do menu piscar todo dia por causa
              de uma checagem de rotina, e selo que pisca sozinho deixa de ser
@@ -2792,7 +2969,15 @@ Deno.serve(async (req) => {
           /* E o texto também não: a observação seria acrescentada de novo a cada
              reconferência, e em uma semana o aviso viraria uma fita. */
           ...(modo === "quarentena" ? { texto: textoFinal } : {}),
-        }).eq("id", al.id);
+        /* SÓ SE AINDA ESTIVER ABERTO. A conferência leva até um minuto por
+           anúncio; um 👎 dado nesse meio-tempo descarta o achado, e sem esta
+           guarda a linha acima o ressuscitaria como `novo` — e mandaria
+           WhatsApp de um produto que a pessoa acabou de recusar. */
+        }).eq("id", al.id).in("status", ["a_confirmar", "novo", "visto"]).select("id");
+
+        if (!aindaAberto?.length) {
+          return { id: al.id, desfecho: "recusado no meio da conferência", aviso: null };
+        }
 
         /* AVISAR OU NÃO — e a pergunta não é "virou novo?", é "quem recebe já
            ouviu isto por este preço?".

@@ -674,6 +674,80 @@ export function chaveDoProduto(titulo: string, total: number): string {
   return `${norm(titulo).slice(0, 80)}|${Math.round(total)}`;
 }
 
+/**
+ * ANÚNCIOS DO MESMO PRODUTO, em grupos. Chegam repetidos: o mesmo notebook
+ * pelo Buscapé, pelo Bondfaro e pelo Zoom. Mora aqui porque a tela agrupa e o
+ * 👎 derruba o grupo inteiro — duas regras de "é o mesmo" divergiriam e o voto
+ * sumiria com uma linha que a tela mostrava separada.
+ *
+ * Dois degraus:
+ *   1. `juntados` — a pessoa disse que são o mesmo (`facilities_radar_iguais`,
+ *      título normalizado → grupo). Vence tudo, inclusive a condição: foi
+ *      decisão de quem olhou.
+ *   2. Título normalizado + condição — novo e usado com o mesmo nome não são a
+ *      mesma compra. Títulos cortados em pontos diferentes NÃO se juntam aqui
+ *      (um título curto engoliria modelos distintos); é para isso que existe o 1.
+ *
+ * A ordem de entrada é preservada: com a lista por total crescente, a cabeça de
+ * cada grupo é a opção mais barata dele.
+ */
+export function agruparIguais<T extends { titulo: string; condicao?: string | null }>(
+  lista: T[],
+  juntados: ReadonlyMap<string, string> = new Map(),
+): T[][] {
+  const grupos = new Map<string, T[]>();
+  for (const o of lista) {
+    const t = norm(o.titulo);
+    const manual = juntados.get(t);
+    const chave = manual ? `g:${manual}` : `t:${t}|${o.condicao ?? ""}`;
+    const g = grupos.get(chave);
+    if (g) g.push(o);
+    else grupos.set(chave, [o]);
+  }
+  return [...grupos.values()];
+}
+
+/**
+ * A TRAVA DA SUGESTÃO DE JUNÇÃO. A IA lê títulos e propõe "são o mesmo
+ * produto"; esta regra descarta a proposta quando os dois títulos DIZEM coisas
+ * diferentes (marca, processador, RAM, disco, tela). Campo que só um dos dois
+ * traz não conta contra — é justamente o título cortado que motivou a junção.
+ */
+export function podemSerIguais(a: string, b: string): boolean {
+  const x = lerSpecs(a), y = lerSpecs(b);
+  const campos = ["marca", "cpu_texto", "cpu_geracao", "ram_gb", "armazenamento_gb", "tela_pol"] as const;
+  return campos.every((c) => x[c] == null || y[c] == null || x[c] === y[c]);
+}
+
+/**
+ * Filtra o que a IA devolveu (índices da lista que ela recebeu): índice
+ * inválido sai, anúncio só entra em UM conjunto (o primeiro), e um conjunto com
+ * qualquer par incompatível é descartado INTEIRO — a sugestão errada custa um
+ * clique de quem confia nela, então na dúvida não se sugere.
+ */
+export function validarSugestoesDeIguais(
+  titulos: string[],
+  conjuntos: { indices: number[]; porque?: string }[],
+): { indices: number[]; porque: string }[] {
+  const usados = new Set<number>();
+  const saida: { indices: number[]; porque: string }[] = [];
+  for (const c of conjuntos ?? []) {
+    const idx = [...new Set((c?.indices ?? []).map(Number))]
+      .filter((i) => Number.isInteger(i) && i >= 0 && i < titulos.length && !usados.has(i));
+    if (idx.length < 2) continue;
+    const ok = idx.every((i, k) => idx.slice(k + 1).every((j) => podemSerIguais(titulos[i], titulos[j])));
+    if (!ok) continue;
+    idx.forEach((i) => usados.add(i));
+    saida.push({ indices: idx, porque: String(c?.porque ?? "").trim() });
+  }
+  return saida;
+}
+
+/** Linhas de `facilities_radar_iguais` → o mapa que `agruparIguais` lê. */
+export function mapaDeJuntados(linhas: { titulo: string; grupo: string }[] | null | undefined): Map<string, string> {
+  return new Map((linhas ?? []).map((l) => [norm(l.titulo), String(l.grupo)]));
+}
+
 /** Palavras que indicam produto usado/recondicionado, quando a fonte não informa a condição. */
 const USADO_TEXTO = /\b(usado|seminovo|semi-novo|recondicionado|refurbished|revisado|vitrine|open box|remanufaturado)\b/;
 

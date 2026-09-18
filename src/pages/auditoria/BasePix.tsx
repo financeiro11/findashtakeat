@@ -12,6 +12,7 @@ import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe } from "@/lib/apelidos";
 import { ComprovanteLink } from "@/components/ComprovanteLink";
 import { useExcluirComprovante } from "./useExcluirComprovante";
+import { iniciarTarefa, useTarefas } from "@/lib/segundo-plano";
 
 type Lanc = {
   id: number;
@@ -106,7 +107,6 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
   const apelidos = useApelidos();
   const [rows, setRows] = useState<Lanc[]>([]);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
   const [referencia, setReferencia] = useState<string>(mesAtual());
   const [fCat, setFCat] = useState("todas");
   const [fCompr, setFCompr] = useState<"todos" | "com" | "sem">("todos");
@@ -192,36 +192,60 @@ export default function BasePix({ abas }: { abas?: React.ReactNode }) {
     return data as any;
   };
 
-  const sync = async () => {
-    setSyncing(true);
-    toast.message(`Sincronizando PIX de ${referenciaLabel(referencia)} com o Omie…`);
-    try {
-      // 1) Grava os lançamentos do mês (rápido, sem chamadas por título).
-      const d = await invocar({ action: "sync", referencia });
-      toast.success(`${d.pix_gravados} lançamentos gravados. Buscando fornecedores e comprovantes…`);
-      await load();
+  /* A SINCRONIZAÇÃO É TAREFA EM SEGUNDO PLANO (18/09/2026). Os anexos saem em
+     lotes de 60 até zerar — minutos num mês cheio —, e o laço morava aqui: sair
+     da tela o deixava rodando sem placar, e voltar liberava o botão para uma
+     segunda rodada por cima. A tarefa relê a tabela pelo `load` MAIS RECENTE
+     (o ref), para não pintar a tela com o mês de quando começou. */
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const tarefaSync = useTarefas().find((t) => t.chave === `pix:sync:${referencia}` && t.estado === "rodando") ?? null;
+  const syncing = !!tarefaSync;
 
-      // 2) Enriquece (nome do fornecedor + comprovante) em lotes até zerar — evita o timeout.
-      //    Retenta falhas transitórias (o passo é resumível) antes de desistir.
-      let restantes = Number(d.anexos_pendentes ?? 0);
-      let seguranca = 0, falhas = 0;
-      while (restantes > 0 && seguranca < 300) {
-        try {
-          const a = await invocar({ action: "anexos", referencia, limite: 60 });
-          restantes = Number(a.restantes ?? 0);
-          falhas = 0;
-          toast.message(`Fornecedores e comprovantes: ${restantes} restante(s)…`);
-          await load();
-        } catch (e) {
-          if (++falhas >= 3) throw e; // desiste após 3 falhas seguidas
+  const sync = () => {
+    const ref = referencia;
+    iniciarTarefa(
+      {
+        chave: `pix:sync:${ref}`,
+        titulo: `PIX de ${referenciaLabel(ref)} ← Omie`,
+        passos: [
+          { id: "lancamentos", titulo: "Lançamentos do mês gravados" },
+          { id: "anexos", titulo: "Fornecedores e comprovantes" },
+        ],
+      },
+      async (ctx) => {
+        // 1) Grava os lançamentos do mês (rápido, sem chamadas por título).
+        ctx.passo("lancamentos", "correndo", "Lendo o Omie…");
+        const d = await invocar({ action: "sync", referencia: ref });
+        ctx.passo("lancamentos", "ok", `${d.pix_gravados} lançamentos gravados.`);
+        await loadRef.current();
+
+        // 2) Enriquece (nome do fornecedor + comprovante) em lotes até zerar — evita o timeout.
+        //    Retenta falhas transitórias (o passo é resumível) antes de desistir.
+        let restantes = Number(d.anexos_pendentes ?? 0);
+        let seguranca = 0, falhas = 0;
+        ctx.passo("anexos", "correndo", `${restantes} restante(s)…`);
+        while (restantes > 0 && seguranca < 300 && ctx.segue()) {
+          try {
+            const a = await invocar({ action: "anexos", referencia: ref, limite: 60 });
+            restantes = Number(a.restantes ?? 0);
+            falhas = 0;
+            ctx.passo("anexos", "correndo", `${restantes} restante(s)…`);
+            await loadRef.current();
+          } catch (e) {
+            if (++falhas >= 3) throw e; // desiste após 3 falhas seguidas
+          }
+          seguranca++;
         }
-        seguranca++;
-      }
-      await load();
-      toast.success("PIX sincronizado.");
-    } catch (e: any) {
-      toast.error("Falha ao sincronizar PIX: " + e.message, { duration: 8000 });
-    } finally { setSyncing(false); }
+        if (restantes > 0) {
+          ctx.passo("anexos", "atencao", `${restantes} ficaram para a próxima sincronização.`);
+          return { resumo: `${d.pix_gravados} lançamentos · ${restantes} comprovante(s) ainda por buscar.` };
+        }
+        ctx.passo("anexos", "ok", "Todos buscados.");
+        return { resumo: `${d.pix_gravados} lançamentos de ${referenciaLabel(ref)} sincronizados.` };
+      },
+      { aoTerminar: () => { void loadRef.current(); } },
+    );
   };
 
   /* Puxa as cinco planilhas de formulário, casa com os lançamentos e confere

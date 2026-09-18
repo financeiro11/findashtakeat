@@ -70,6 +70,8 @@ import { fmtBRL } from "@/pages/cartao/valores";
 import { useApelidos } from "@/hooks/useApelidos";
 import { apelidoDe } from "@/lib/apelidos";
 import { normalize } from "@/lib/normalize";
+import { dispensar, useTarefas } from "@/lib/segundo-plano";
+import { chaveEnvioCartao, iniciarEnvioCartao, type DadosEnvioCartao } from "./cartao-envio-tarefa";
 
 /* As tabelas do cartão são novas e ainda não estão no types.ts gerado (que não
    se edita à mão). O cast fica confinado aqui. */
@@ -671,60 +673,26 @@ export default function CartaoOmie() {
    * mesmo método e uma fatura real tem ~470 títulos, então a função devolve
    * `restantes` em vez de estourar o tempo da invocação.
    */
-  const enviar = useCallback(async () => {
+  const enviar = useCallback(() => {
     if (recusa) { toast.error(recusa); return; }
     setResultado(null);
-
-    const acumulado: Resultado = { status: "ok", criados: 0, ja_estavam: 0, recuperados: 0, falhas: [] };
-    try {
-      for (let volta = 1; ; volta++) {
-        setEnviando(volta === 1 ? "Enviando…" : `Enviando… (lote ${volta})`);
-        const { data, error } = await supabase.functions.invoke("cartao-omie-enviar", {
-          // O escopo vai junto para a função saber que um envio parcial não
-          // fecha a fatura — fechar com o resto de fora barraria a continuação.
-          body: { action: "enviar", competencia, escopo, titulos: aEnviar },
-        });
-        if (error) throw new Error(error.message);
-        const r = data as Resultado;
-        if (r.status === "erro") { setResultado(r); toast.error(r.erro ?? "Envio recusado."); return; }
-
-        acumulado.criados = (acumulado.criados ?? 0) + (r.criados ?? 0);
-        acumulado.recuperados = (acumulado.recuperados ?? 0) + (r.recuperados ?? 0);
-        acumulado.ja_estavam = r.ja_estavam ?? 0;
-        acumulado.falhas = [...(acumulado.falhas ?? []), ...(r.falhas ?? [])];
-        acumulado.total = r.total;
-        acumulado.restantes = r.restantes;
-        acumulado.fatura_fechada = r.fatura_fechada;
-
-        // Sem progresso e ainda com fila é o único jeito de isto virar laço
-        // infinito — para em vez de martelar o Omie.
-        if (!r.restantes) break;
-        if (!r.criados && !r.falhas?.length) {
-          acumulado.status = "parcial";
-          toast.error("O envio parou sem conseguir criar nenhum título neste lote.");
-          break;
-        }
-      }
-
-      acumulado.status = acumulado.falhas?.length ? "parcial" : "ok";
-      setResultado(acumulado);
-      if (acumulado.falhas?.length) {
-        toast.error(`${acumulado.criados} título(s) criado(s), ${acumulado.falhas.length} com erro.`);
-      } else {
-        toast.success(`${acumulado.criados} título(s) criado(s) no Omie.`);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setResultado({ status: "erro", erro: msg });
-      toast.error("Não consegui enviar: " + msg);
-    } finally {
-      setEnviando(null);
-      await carregarEnvios(competencia);
+    const alvo = competencia;
+    iniciarEnvioCartao({ competencia: alvo, escopo, titulos: aEnviar }, async () => {
+      await carregarEnvios(alvo);
       const { data } = await db
-        .from("cartao_faturas").select("provisionamento").eq("competencia", competencia).maybeSingle();
+        .from("cartao_faturas").select("provisionamento").eq("competencia", alvo).maybeSingle();
       setEstadoDaFatura((data?.provisionamento ?? null) as EstadoDaFatura);
-    }
+    });
   }, [recusa, competencia, escopo, aEnviar, carregarEnvios]);
+
+  /* O ENVIO É TAREFA EM SEGUNDO PLANO (18/09/2026) — ver `cartao-envio-tarefa.ts`.
+     O rótulo do botão e o resultado vêm da tarefa desta competência: sair da
+     tela e voltar mostra o mesmo lote, e o botão segue travado enquanto roda. */
+  const tarefaEnvio = useTarefas().find((t) => t.chave === chaveEnvioCartao(competencia)) ?? null;
+  const dadosEnvio = (tarefaEnvio?.dados ?? null) as DadosEnvioCartao | null;
+  const enviandoVisivel = tarefaEnvio?.estado === "rodando" ? dadosEnvio?.rotulo || "Enviando…" : enviando;
+  const resultadoVisivel: Resultado | null = resultado
+    ?? (tarefaEnvio && tarefaEnvio.estado !== "rodando" ? dadosEnvio?.resultado ?? null : null);
 
   /** Apaga do Omie o que a fatura sintética criou. Só ela — ver a função. */
   const limparTeste = useCallback(async () => {
@@ -738,13 +706,14 @@ export default function CartaoOmie() {
       if (r.status === "erro") { toast.error(r.erro ?? "Não consegui limpar."); return; }
       toast.success(`${r.apagados ?? 0} título(s) de teste excluído(s) do Omie.`);
       setResultado(null);
+      if (tarefaEnvio && tarefaEnvio.estado !== "rodando") dispensar(tarefaEnvio.id);
     } catch (e) {
       toast.error("Não consegui limpar: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setEnviando(null);
       await carregarEnvios(competencia);
     }
-  }, [competencia, carregarEnvios]);
+  }, [competencia, carregarEnvios, tarefaEnvio]);
 
   /* ---------------------------------------------------------------- */
 
@@ -947,8 +916,8 @@ export default function CartaoOmie() {
         envios={envios}
         orfaos={auditoria?.orfaos.length ?? 0}
         recusa={recusa}
-        enviando={enviando}
-        resultado={resultado}
+        enviando={enviandoVisivel}
+        resultado={resultadoVisivel}
         faturaDeTeste={faturaDeTeste}
         onEnviar={enviar}
         onLimparTeste={limparTeste}

@@ -19,6 +19,7 @@
  */
 
 import { useState } from "react";
+import { iniciarTarefa, useTarefas } from "@/lib/segundo-plano";
 import { toast } from "sonner";
 import { FlaskConical, Loader2, Send, Trash2, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -75,8 +76,14 @@ export default function EnviarFolhaOmie({
   recusa: string | null;
   onEnviado: () => void;
 }) {
-  const [ocupado, setOcupado] =
+  const [ocupadoLocal, setOcupado] =
     useState<null | "teste" | "tudo" | "limpar" | "apagarTudo" | "corrigir">(null);
+  /* O ENVIO COMPLETO É TAREFA EM SEGUNDO PLANO (18/09/2026): uma folha de cem
+     sai em até doze rodadas, minutos a fio. Enquanto ela roda, a tela inteira
+     conta como ocupada — teste, correção e exclusão por cima de um envio em
+     curso mexeriam nos mesmos títulos. */
+  const tarefaFolha = useTarefas().find((t) => t.chave === `folha:enviar:${competencia}`) ?? null;
+  const ocupado = tarefaFolha?.estado === "rodando" ? "tudo" : ocupadoLocal;
   const [criados, setCriados] = useState<string[]>([]);
   const [falhas, setFalhas] = useState<Resultado[]>([]);
   const [confirmando, setConfirmando] = useState<null | "tudo" | "prontos" | "apagarTudo">(null);
@@ -244,91 +251,103 @@ export default function EnviarFolhaOmie({
     }
   };
 
-  const enviarTudo = async () => {
-    setOcupado("tudo");
+  const enviarTudo = () => {
     setConfirmando(null);
-    try {
-      /* SEMPRE por códigos, e sempre os que faltam. Mandar a competência
-         inteira reenviava quem já estava lá para colher recusa por
-         duplicidade — barulho que escondia as falhas de verdade. */
-      let pendentesCodigos: string[] | null = faltamCriar.map((p) => p.codigo);
-      let totalCriados = 0;
-      const todosRuins: Resultado[] = [];
-      const todasChaves: string[] = [];
-      let ultimo: Resposta | null = null;
-      const todosCadastros = { criados: 0, pixGravado: 0, jaExistiam: 0 };
+    setFalhas([]);
+    /* SEMPRE por códigos, e sempre os que faltam. Mandar a competência
+       inteira reenviava quem já estava lá para colher recusa por
+       duplicidade — barulho que escondia as falhas de verdade. */
+    const iniciais = faltamCriar.map((p) => p.codigo);
+    const comp = competencia;
+    iniciarTarefa(
+      {
+        chave: `folha:enviar:${comp}`,
+        titulo: `Folha de ${comp} → Omie`,
+        subtitulo: `${iniciais.length} título(s) a criar`,
+        passos: [{ id: "enviar", titulo: "Títulos da folha criados no Omie" }],
+      },
+      async (ctx) => {
+        let pendentesCodigos: string[] | null = iniciais;
+        let totalCriados = 0;
+        const todosRuins: Resultado[] = [];
+        const todasChaves: string[] = [];
+        let ultimo: Resposta | null = null;
+        const cad = { criados: 0, pixGravado: 0, jaExistiam: 0 };
 
-      for (let rodada = 0; rodada < MAX_RODADAS; rodada++) {
-        const r: Resposta = await chamar(pendentesCodigos
-          ? { acao: "enviar", competencia, codigos: pendentesCodigos }
-          : { acao: "enviar", competencia });
-        ultimo = r;
-        totalCriados += r.titulos ?? 0;
-        todosRuins.push(...(r.resultados ?? []).filter((x) => !x.criado));
-        todasChaves.push(...(r.integracoes ?? []));
-        if (r.cadastro_de_fornecedor) {
-          todosCadastros.criados += r.cadastro_de_fornecedor.criados;
-          todosCadastros.pixGravado += r.cadastro_de_fornecedor.pix_gravado;
-          todosCadastros.jaExistiam += r.cadastro_de_fornecedor.ja_existiam;
+        for (let rodada = 0; rodada < MAX_RODADAS && ctx.segue(); rodada++) {
+          ctx.passo("enviar", "correndo",
+            `${totalCriados} criado(s)${pendentesCodigos ? ` · faltam ${pendentesCodigos.length}` : ""} · rodada ${rodada + 1}`);
+          const r: Resposta = await chamar(pendentesCodigos
+            ? { acao: "enviar", competencia: comp, codigos: pendentesCodigos }
+            : { acao: "enviar", competencia: comp });
+          ultimo = r;
+          totalCriados += r.titulos ?? 0;
+          todosRuins.push(...(r.resultados ?? []).filter((x) => !x.criado));
+          todasChaves.push(...(r.integracoes ?? []));
+          if (r.cadastro_de_fornecedor) {
+            cad.criados += r.cadastro_de_fornecedor.criados;
+            cad.pixGravado += r.cadastro_de_fornecedor.pix_gravado;
+            cad.jaExistiam += r.cadastro_de_fornecedor.ja_existiam;
+          }
+          const faltam = r.restantes_codigos ?? [];
+          if (!faltam.length) break;
+          // Servidor que não avançou nada: parar em vez de repetir a mesma coisa.
+          if (!r.titulos && !(r.resultados ?? []).length) break;
+          if (r.interrompido?.motivo === "bloqueio") break;
+          pendentesCodigos = faltam;
         }
 
-        const faltam = r.restantes_codigos ?? [];
-        if (!faltam.length) break;
-        // Servidor que não avançou nada: parar em vez de repetir a mesma coisa.
-        if (!r.titulos && !(r.resultados ?? []).length) break;
-        if (r.interrompido?.motivo === "bloqueio") break;
-
-        pendentesCodigos = faltam;
-        toast.loading(`${totalCriados} criados — continuando com ${faltam.length}…`, { id: "folha-envio" });
-      }
-      toast.dismiss("folha-envio");
-
-      setFalhas(todosRuins);
-      setCriados(todasChaves);
-
-      const bloqueio = ultimo?.interrompido?.motivo === "bloqueio";
-      const faltaram = ultimo?.restantes_codigos?.length ?? 0;
-
-      /* O QUE O DEGRAU DE CADASTRO FEZ, dito à parte dos títulos.
-       *
-       * Some das rodadas seguintes por construção — a primeira já destrava ou
-       * bloqueia cada pessoa —, então soma-se o de todas em vez de ler só o
-       * último. E é um toast separado de propósito: "criei 4 fornecedores no
-       * Omie" é escrita em cadastro de terceiro, não um detalhe de progresso. */
-      const cad = todosCadastros;
-      if (cad.criados || cad.pixGravado) {
-        toast.info(
-          [
-            cad.criados ? `${cad.criados} fornecedor(es) criados no Omie` : "",
-            cad.pixGravado ? `${cad.pixGravado} com a chave PIX gravada` : "",
-          ].filter(Boolean).join(" · "),
-          {
-            description: "Eram pessoas que ficariam de fora esperando alguém abrir o ERP. "
-              + "Confira o cadastro no Omie quando puder.",
-            duration: 10_000,
-          },
-        );
-      }
-      if (bloqueio) {
-        const min = Math.ceil((ultimo?.interrompido?.segundos ?? 0) / 60);
-        toast.error(`${totalCriados} criados — o Omie bloqueou a API por consumo`, {
-          description: `Faltam ${faltaram}. Tente de novo em ${min} minuto(s); os que já entraram não repetem.`,
-        });
-      } else if (todosRuins.length || faltaram) {
-        toast.error(`${totalCriados} criados, ${todosRuins.length} recusados, ${faltaram} não tentados`, {
-          description: "A competência NÃO foi marcada como enviada — reenvie depois de corrigir.",
-        });
-      } else {
-        toast.success(`Folha de ${competencia} provisionada — ${totalCriados} títulos`);
-      }
-      onEnviado();
-    } catch (e) {
-      toast.dismiss("folha-envio");
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setOcupado(null);
-    }
+        ctx.atualizar({ dados: { falhas: todosRuins, chaves: todasChaves } });
+        /* O QUE O DEGRAU DE CADASTRO FEZ, dito à parte dos títulos: "criei 4
+           fornecedores no Omie" é escrita em cadastro de terceiro, não um
+           detalhe de progresso. */
+        if (cad.criados || cad.pixGravado) {
+          ctx.atualizar({ avisos: [
+            [cad.criados ? `${cad.criados} fornecedor(es) criados no Omie` : "",
+              cad.pixGravado ? `${cad.pixGravado} com a chave PIX gravada` : ""].filter(Boolean).join(" · ") +
+            ". Eram pessoas que ficariam de fora esperando alguém abrir o ERP. Confira o cadastro no Omie quando puder.",
+          ] });
+        }
+        if (todosRuins.length) {
+          ctx.atualizar({ paraVoce: todosRuins.slice(0, 30).map((x) => ({
+            id_asaas: null, nome: x.nome, titulo: "O Omie recusou o título",
+            oQueFazer: x.erro ?? "Sem motivo informado.", tentado: [x.integracao],
+          })) });
+        }
+        const bloqueio = ultimo?.interrompido?.motivo === "bloqueio";
+        const faltaram = ultimo?.restantes_codigos?.length ?? 0;
+        if (bloqueio) {
+          const min = Math.ceil((ultimo?.interrompido?.segundos ?? 0) / 60);
+          const txt = `${totalCriados} criados — o Omie bloqueou a API por consumo. Faltam ${faltaram}; ` +
+            `tente de novo em ${min} minuto(s), os que já entraram não repetem.`;
+          ctx.passo("enviar", "atencao", txt);
+          return { estado: "atencao", resumo: txt };
+        }
+        if (todosRuins.length || faltaram) {
+          const txt = `${totalCriados} criados, ${todosRuins.length} recusados, ${faltaram} não tentados. ` +
+            "A competência NÃO foi marcada como enviada — reenvie depois de corrigir.";
+          ctx.passo("enviar", "atencao", txt);
+          return { estado: "atencao", resumo: txt };
+        }
+        const txt = `Folha de ${comp} provisionada — ${totalCriados} títulos.`;
+        ctx.passo("enviar", "ok", txt);
+        return { estado: "ok", resumo: txt };
+      },
+      {
+        aoTerminar: (t) => {
+          const d = t.dados as { falhas: Resultado[]; chaves: string[] } | null;
+          if (d) { setFalhas(d.falhas); setCriados(d.chaves); }
+          onEnviado();
+        },
+      },
+    );
   };
+
+  /* Voltando à tela depois do envio, as recusas vêm da tarefa — o state local
+     nasceu vazio. */
+  const falhasVisiveis = falhas.length || !tarefaFolha || tarefaFolha.estado === "rodando"
+    ? falhas
+    : ((tarefaFolha.dados as { falhas: Resultado[] } | null)?.falhas ?? []);
 
   return (
     <div className="space-y-3 border-t pt-3">
@@ -354,15 +373,15 @@ export default function EnviarFolhaOmie({
         </div>
       )}
 
-      {falhas.length > 0 && (
+      {falhasVisiveis.length > 0 && (
         <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5">
           <p className="text-[12.5px] font-semibold text-destructive">
-            {falhas.length} título(s) recusados pelo Omie
+            {falhasVisiveis.length} título(s) recusados pelo Omie
           </p>
           <button
             className="mt-1 text-xs text-primary hover:underline"
             onClick={() => {
-              const linhas = falhas.map((f) => `• ${f.nome}: ${f.erro ?? "sem motivo"}`);
+              const linhas = falhasVisiveis.map((f) => `• ${f.nome}: ${f.erro ?? "sem motivo"}`);
               const texto = ["Títulos recusados pelo Omie:", "", ...linhas].join("\n");
               navigator.clipboard.writeText(texto)
                 .then(() => toast.success("Lista copiada"), () => toast.error("Não deu para copiar"));
@@ -371,7 +390,7 @@ export default function EnviarFolhaOmie({
             Copiar a lista
           </button>
           <ul className="mt-1.5 space-y-1">
-            {falhas.map((f) => (
+            {falhasVisiveis.map((f) => (
               <li key={f.integracao} className="text-xs">
                 <span className="font-medium">{f.nome}</span>
                 <span className="mono ml-1.5 text-[11px] text-muted-foreground">{f.integracao}</span>

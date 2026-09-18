@@ -26,6 +26,7 @@ import { enviarProntos, enviarUnitario } from "@/lib/omieAnexos";
 import { WhatsAppLogo, OmieLogo } from "@/components/brand-logos";
 import { useAnexarComprovante } from "./useAnexarComprovante";
 import { useExcluirComprovante } from "./useExcluirComprovante";
+import { foiPedidoParar, iniciarTarefa, parar, useTarefas } from "@/lib/segundo-plano";
 
 type Severidade = "Crítico" | "Alto" | "Médio" | "Baixo";
 type Status = "Pendente" | "Em análise" | "Aprovado" | "Reprovado" | "Ajuste solicitado";
@@ -143,9 +144,6 @@ const LOTE_CONFERENCIA = 40;
    chegar aqui, alguma coisa está andando em círculo e é melhor devolver o
    controle para a pessoa do que ficar gastando cota sozinho. */
 const MAX_RODADAS_CONFERENCIA = 12;
-/* Um id só para a conferência inteira: as levas se sucedem e cada uma escreve
-   por cima do mesmo aviso, em vez de empilhar quatro toasts na tela. */
-const TOAST_CONFERENCIA = "conferencia-comprovantes";
 
 /* `types.ts` é gerado pelo Supabase CLI e ainda não conhece a RPC criada na
    migration 20260819120000. Mesmo atalho do `useApelidos` — some quando os tipos
@@ -267,11 +265,8 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
      das rodadas mora aqui e continua rodando com a janela fechada. O modal é a
      janela para ele. Ver `conferirComprovantes` mais abaixo. */
   const [conferenciaOpen, setConferenciaOpen] = useState(false);
-  const [confLendo, setConfLendo] = useState(false);
-  const [confRodada, setConfRodada] = useState(0);
-  const [confResumo, setConfResumo] = useState<Resumo | null>(null);
-  const [confErro, setConfErro] = useState<string | null>(null);
-  const [confParando, setConfParando] = useState(false);
+  /* Aprovados à mão no painel, por cima do resumo que vem da tarefa. */
+  const [aprovadosNaMao, setAprovadosNaMao] = useState<Set<number>>(() => new Set());
   const [filtrosOpen, setFiltrosOpen] = useState(false);
   const [pagina, setPagina] = useState(1);
 
@@ -798,153 +793,117 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
     }
   };
 
-  /* O pedido de parar mora numa ref, não no estado: o laço é uma função só, e a
-     variável de estado que ele leria ficaria congelada na primeira rodada. O
-     estado `confParando` existe só para o botão mudar de cara — ref não redesenha. */
-  const confPararRef = useRef(false);
-  /* Trava de reentrada. O botão do cabeçalho abre o painel em vez de disparar de
-     novo, mas o "Ler mais" do painel chama a mesma função e o estado do React é
-     assíncrono — dois cliques rápidos disparariam dois laços gastando cota em dobro. */
-  const confRodandoRef = useRef(false);
-  /* Sair da página encerra o encadeamento. Nada se perde: a leva que já está no
-     ar termina no servidor e grava, e o que sobrou volta como fila — o mesmo
-     estado de quem clicou em "Parar". */
-  const confMontadoRef = useRef(true);
-  useEffect(() => () => { confMontadoRef.current = false; confPararRef.current = true; }, []);
-
-  /* Trocar de fatura joga fora o resultado da anterior: um resumo velho ao lado
-     de uma fatura nova mente. Não interrompe o que está no ar — o laço guardou a
-     competência dele e termina o que começou. */
-  useEffect(() => {
-    if (!confRodandoRef.current) { setConfResumo(null); setConfErro(null); }
-  }, [competencia]);
-
-  /* A conferência de comprovantes, em segundo plano.
+  /* A CONFERÊNCIA DE COMPROVANTES É TAREFA EM SEGUNDO PLANO (18/09/2026).
    *
    * Ela lê em rodadas porque o worker do servidor morre nos 150s: cada chamada é
-   * um worker novo, com orçamento novo, e o laço repete até a fila zerar. Isso
-   * levava minutos com a pessoa presa olhando um modal — hoje o laço é daqui, e
-   * fechar o painel (ou nunca abri-lo) não para nada.
-   *
-   * O desfecho é escrito UMA vez, no fim. Erro e cota já escreveram no mesmo id
-   * do toast, e um "concluída" por cima apagaria o motivo — foi exatamente o que
-   * transformava uma falha em "Conferência concluída". */
-  const conferirComprovantes = async (reler = false) => {
-    if (confRodandoRef.current) return;
-    confRodandoRef.current = true;
-    confPararRef.current = false;
-    setConfLendo(true); setConfErro(null); setConfParando(false);
+   * um worker novo, com orçamento novo, e o laço repete até a fila zerar. O laço
+   * já rodava com o painel fechado, mas SAIR DA PÁGINA o interrompia de propósito
+   * — e o pedido de 18/09 é o oposto: poder ir fazer outra coisa. Agora o laço é
+   * de `lib/segundo-plano`, o resumo acumulado mora em `tarefa.dados`, e a
+   * página só o lê. A tarefa é por fatura: trocar de competência mostra a da
+   * outra, sem apagar nem redirecionar a que está no ar. */
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const tarefaConf = useTarefas().find((t) => t.chave === `auditoria:conferir:${competencia}`) ?? null;
+  const dadosConf = (tarefaConf?.dados ?? null) as { rodada: number; resumo: Resumo | null; erro: string | null } | null;
+  const confLendo = tarefaConf?.estado === "rodando";
+  const confRodada = confLendo ? dadosConf?.rodada ?? 0 : 0;
+  const confErro = dadosConf?.erro ?? null;
+  const confParando = !!tarefaConf && confLendo && foiPedidoParar(tarefaConf.id);
+  const confResumo = useMemo<Resumo | null>(() => {
+    const r = dadosConf?.resumo ?? null;
+    if (!r || !aprovadosNaMao.size) return r;
+    return {
+      ...r,
+      itens: r.itens.map((x) => aprovadosNaMao.has(x.id) ? { ...x, aprovado: true, aprovado_na_mao: true, status: "Aprovado" } : x),
+    };
+  }, [dadosConf, aprovadosNaMao]);
 
-    /* A fatura fica presa no início: trocar o seletor no meio da leitura não pode
-       redirecionar as rodadas que faltam para outra competência. */
+  const conferirComprovantes = (reler = false) => {
+    if (confLendo) return;
+    // A fatura fica presa no início: trocar o seletor no meio não redireciona as rodadas.
     const daFatura = competencia;
-    const verResultado = { label: "Ver", onClick: () => setConferenciaOpen(true) };
+    setAprovadosNaMao(new Set());
+    iniciarTarefa(
+      {
+        chave: `auditoria:conferir:${daFatura}`,
+        titulo: "Conferência de comprovantes",
+        subtitulo: `Fatura ${daFatura}${reler ? " · lendo de novo" : ""}`,
+        passos: [{ id: "ler", titulo: "Comprovantes lidos e conferidos com a nota" }],
+      },
+      async (ctx) => {
+        let resumo: Resumo | null = null;
+        let aprovados = 0;
+        /* O que sobrava na rodada anterior. É por ele que se sabe se a rodada ANDOU:
+           um documento que o serviço de IA não conseguiu ler continua na fila sem
+           ser carimbado, e insistir nele seria repetir o mesmo tropeço até a trava. */
+        let sobrava: number | null = null;
+        const publicar = (rodada: number, erro: string | null = null) =>
+          ctx.atualizar({ dados: { rodada, resumo, erro } });
 
-    let aprovados = 0;
-    let desfecho: "erro" | "cota" | "parado" | null = null;
-    /* O que sobrava na rodada anterior. É por ele que se sabe se a rodada ANDOU:
-       um documento que o serviço de IA não conseguiu ler continua na fila sem ser
-       carimbado, e insistir nele seria repetir o mesmo tropeço até a trava. */
-    let sobrava: number | null = null;
+        for (let i = 0; i < MAX_RODADAS_CONFERENCIA && ctx.segue(); i++) {
+          publicar(i + 1);
+          ctx.passo("ler", "correndo", `${i + 1}ª leva${resumo ? ` · ${resumo.lidos} lido(s) · ${aprovados} aprovado(s)` : ""}`);
+          const { data, error } = await supabase.functions.invoke("auditoria-conferir-comprovante", {
+            body: { action: "conferir", competencia: daFatura, limite: LOTE_CONFERENCIA, reler: reler && i === 0 },
+          });
+          // A função devolve 200 com `{ error }` no corpo para o erro chegar legível.
+          const falha = error?.message ?? (data as Falha | null)?.error;
+          if (falha) {
+            publicar(0, falha);
+            ctx.passo("ler", "falhou", falha);
+            return { estado: "falhou", resumo: `Não deu para conferir: ${falha}` };
+          }
+          const r = data as Resumo;
+          aprovados += r.aprovados;
+          /* Acumula em vez de substituir: quem já apareceu na lista continua
+             nela. `restantes` e `quota_esgotada` são os da última rodada. */
+          if (resumo) {
+            const ant: Resumo = resumo;
+            const vistos = new Set(r.itens.map((x) => x.id));
+            resumo = {
+              ...r,
+              itens: [...r.itens, ...ant.itens.filter((x) => !vistos.has(x.id))],
+              erros: [...r.erros, ...ant.erros.filter((e) => !r.erros.some((n) => n.id === e.id))],
+              lidos: ant.lidos + r.lidos,
+            };
+          } else {
+            resumo = r;
+          }
+          publicar(i + 1);
+          // A lista reflete a leva na hora — sem acender o esqueleto por cima de quem lê.
+          await loadRef.current({ silencioso: true });
 
-    toast.loading("Conferindo comprovantes…", {
-      id: TOAST_CONFERENCIA,
-      description: "Pode continuar trabalhando — o aviso chega quando terminar.",
-    });
-
-    try {
-      for (let i = 0; i < MAX_RODADAS_CONFERENCIA; i++) {
-        setConfRodada(i + 1);
-        const { data, error } = await supabase.functions.invoke("auditoria-conferir-comprovante", {
-          body: { action: "conferir", competencia: daFatura, limite: LOTE_CONFERENCIA, reler: reler && i === 0 },
-        });
-
-        // A função devolve 200 com `{ error }` no corpo para o erro chegar legível
-        // no toast em vez de virar "FunctionsHttpError" — é o padrão do resto do Hub.
-        const falha = error?.message ?? (data as Falha | null)?.error;
-        if (falha) {
-          setConfErro(falha);
-          toast.error("Não deu para conferir: " + falha, { id: TOAST_CONFERENCIA, duration: 10000, action: verResultado });
-          desfecho = "erro";
-          break;
-        }
-
-        const r = data as Resumo;
-        aprovados += r.aprovados;
-
-        /* Acumula em vez de substituir: a leitura sai em rodadas e quem já
-           apareceu na lista continua nela. `restantes` e `quota_esgotada` são
-           sempre os da última rodada — é o estado de agora, não a soma de nada. */
-        setConfResumo((ant) => {
-          if (!ant) return r;
-          const vistos = new Set(r.itens.map((x) => x.id));
-          return {
-            ...r,
-            itens: [...r.itens, ...ant.itens.filter((x) => !vistos.has(x.id))],
-            erros: [...r.erros, ...ant.erros.filter((e) => !r.erros.some((n) => n.id === e.id))],
-            lidos: ant.lidos + r.lidos,
-          };
-        });
-        // A lista reflete a leva na hora — sem acender o esqueleto por cima de
-        // quem está lendo a tabela.
-        await load({ silencioso: true });
-
-        if (confPararRef.current) { desfecho = "parado"; break; }
-        if (r.quota_esgotada) {
-          toast.warning(
-            r.quota_por_dia
+          if (r.quota_esgotada) {
+            const txt = r.quota_por_dia
               ? "A cota da chave do Gemini acabou por hoje. O que já foi lido está gravado; o resto sai amanhã."
-              : "A chave bateu no limite por minuto. Espere alguns segundos e clique em \"Ler mais\".",
-            { id: TOAST_CONFERENCIA, duration: 12000, action: verResultado },
-          );
-          desfecho = "cota";
-          break;
+              : "A chave bateu no limite por minuto. Espere alguns segundos e clique em \"Ler mais\".";
+            ctx.passo("ler", "atencao", txt);
+            return { estado: "atencao", resumo: txt };
+          }
+          if (r.restantes <= 0) break;
+          if (sobrava !== null && r.restantes >= sobrava) break;
+          sobrava = r.restantes;
+          /* "Ler de novo" é rodada única, de propósito: com `reler`, a fila é a
+             lista INTEIRA e a rodada é sempre a cabeça dela. */
+          if (reler) break;
         }
-        if (r.restantes <= 0) break;
-        if (sobrava !== null && r.restantes >= sobrava) break;
-        sobrava = r.restantes;
-        /* "Ler de novo" é rodada única, de propósito. Com `reler`, a fila do
-           servidor é a lista INTEIRA e a rodada é sempre a cabeça dela — encadear
-           releria os mesmos documentos para sempre. */
-        if (reler) break;
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setConfErro(msg);
-      toast.error("Não deu para conferir: " + msg, { id: TOAST_CONFERENCIA, duration: 10000, action: verResultado });
-      desfecho = "erro";
-    } finally {
-      setConfLendo(false);
-      setConfRodada(0);
-      setConfParando(false);
-      confPararRef.current = false;
-      confRodandoRef.current = false;
-    }
-
-    // Saiu da página no meio: nada de toast órfão numa tela que não é esta.
-    if (!confMontadoRef.current) { toast.dismiss(TOAST_CONFERENCIA); return; }
-    // Erro e cota já falaram, com o motivo escrito. Quem já terminou não repete.
-    if (desfecho === "erro" || desfecho === "cota") return;
-    if (desfecho === "parado") {
-      toast.message("Conferência interrompida. O que já foi lido está gravado.", { id: TOAST_CONFERENCIA, action: verResultado });
-      return;
-    }
-    if (aprovados > 0) {
-      toast.success(
-        `${aprovados} lançamento${aprovados === 1 ? "" : "s"} aprovado${aprovados === 1 ? "" : "s"}: ` +
-        `bate${aprovados === 1 ? "" : "m"} com a nota.`,
-        { id: TOAST_CONFERENCIA, action: verResultado },
-      );
-    } else {
-      toast.message("Conferência concluída — nada foi aprovado sozinho.", { id: TOAST_CONFERENCIA, action: verResultado });
-    }
+        publicar(0);
+        const txt = aprovados > 0
+          ? `${aprovados} lançamento${aprovados === 1 ? "" : "s"} aprovado${aprovados === 1 ? "" : "s"}: ` +
+            `bate${aprovados === 1 ? "" : "m"} com a nota.`
+          : "Conferência concluída — nada foi aprovado sozinho.";
+        if (!ctx.segue()) return { resumo: "Conferência interrompida. O que já foi lido está gravado." };
+        ctx.passo("ler", "ok", txt);
+        return { estado: "ok", resumo: txt };
+      },
+      { aoTerminar: () => { void loadRef.current({ silencioso: true }); } },
+    );
   };
 
   /** O item que a pessoa aprovou na mão vai para o bloco verde do painel. */
   const marcarAprovadoNaMao = (id: number) =>
-    setConfResumo((ant) => ant
-      ? { ...ant, itens: ant.itens.map((x) => x.id === id ? { ...x, aprovado: true, aprovado_na_mao: true, status: "Aprovado" } : x) }
-      : ant);
+    setAprovadosNaMao((ant) => new Set(ant).add(id));
 
   const kpis = useMemo(() => {
     const pend = periodRows.filter(r => r.status === "Pendente");
@@ -2035,7 +1994,7 @@ export default function Achados({ abas }: { abas?: React.ReactNode }) {
         erro={confErro}
         parando={confParando}
         onLer={(reler) => { void conferirComprovantes(reler); }}
-        onParar={() => { confPararRef.current = true; setConfParando(true); }}
+        onParar={() => { if (tarefaConf) parar(tarefaConf.id); }}
         onAprovadoNaMao={marcarAprovadoNaMao}
       />
 

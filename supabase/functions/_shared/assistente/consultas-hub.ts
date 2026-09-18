@@ -766,7 +766,7 @@ function valorNaUnidade(v: number, unidade: string | null): string {
 }
 
 const SELO_ORIGEM: Record<string, string> = {
-  hub: " [calculado pelo Hub]", hub_parcial: " [PARCIAL — calculado pelo Hub]", hub_estimado: " [ESTIMADO pelo Hub]",
+  hub: " [calculado pelo Hub]", hub_parcial: " [INCOMPLETO — um canal não lançou o mês; calculado pelo Hub]", hub_estimado: " [ESTIMADO pelo Hub]",
 };
 
 /**
@@ -859,8 +859,9 @@ export async function indicadoresOS(
     "",
     "Os números vêm do Takeat OS, o painel que o comercial e a operação alimentam (copiado para",
     "o Hub todo dia às 6h). O que está marcado [calculado pelo Hub] o OS deixou vazio e o Hub",
-    "calculou com a fórmula do próprio OS; [PARCIAL] soma só os canais que lançaram — diga",
-    "quais faltaram; [ESTIMADO] é estimativa. Sempre diga isso junto com o número.",
+    "calculou com a fórmula do próprio OS; [INCOMPLETO] soma só os canais que lançaram — diga",
+    "quais faltaram (está na nota) e NÃO chame de mês em andamento; [ESTIMADO] é estimativa.",
+    "Sempre diga isso junto com o número.",
     "Churn, cancelamento, downsell, CAC, CPL, payback e tempos de atendimento são melhores",
     "ABAIXO da meta: '% da meta' acima de 100 nesses é resultado RUIM. Use a leitura escrita",
     "em cada linha, não reinterprete.",

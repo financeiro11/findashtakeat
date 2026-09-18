@@ -2049,7 +2049,7 @@ export default function RevisaoMes() {
             const a = osAnt?.get(k.ind);
             const v = p?.realizado ?? null;
             const selo = p?.origem && p.origem !== "os"
-              ? (p.origem === "hub_parcial" ? "parcial" : p.origem === "hub_estimado" ? "≈" : "Hub") : null;
+              ? (p.origem === "hub_parcial" ? "incompleto" : p.origem === "hub_estimado" ? "≈" : "Hub") : null;
             return (
               <Kpi key={k.key} eyebrow={<>{k.eyebrow}{selo && (
                 <span className="ml-1.5 rounded bg-muted px-1 text-[9px] font-semibold normal-case tracking-normal text-muted-foreground"

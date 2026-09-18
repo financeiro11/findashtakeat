@@ -47,6 +47,8 @@ export type LinhaMensalOS = {
   realizado: number | null;
   origem?: Origem;
   nota?: string;
+  /** Canais que não lançaram e deixaram este número incompleto (direto ou por herança). */
+  faltam?: string[];
 };
 
 export type CustoOS = { competencia: string; grupo: string; categoria: string; valor: number | null };
@@ -305,15 +307,19 @@ export function completarMensal(
   for (const [comp, linhasDoMes] of estado) {
     const [ano, mes] = comp.split("-").map(Number);
     const pegar = (id: string) => linhasDoMes.get(id);
-    const gravar = (id: string, valor: number, origem: Origem, nota: string) => {
+    const gravar = (id: string, valor: number, origem: Origem, nota: string, faltam?: string[]) => {
       const l = pegar(id);
       if (l && l.realizado != null) return false;
       linhasDoMes.set(id, {
         indicator_id: id, ano, mes, competencia: comp, orcado: l?.orcado ?? null,
-        realizado: valor, origem, nota,
+        realizado: valor, origem, nota, ...(faltam?.length ? { faltam } : {}),
       });
       return true;
     };
+    // Os canais faltantes das entradas: "incompleto" precisa dizer POR QUÊ, senão lê-se
+    // "mês em andamento" (foi a leitura do financeiro em 18/09 olhando agosto fechado).
+    const faltasDe = (refs: string[]) => [...new Set(refs.flatMap((r) => pegar(r)?.faltam ?? []))];
+    const notaDeFalta = (f: string[]) => (f.length ? ` Incompleto: usa total sem ${f.join(", ")}, que não lançou o mês.` : "");
 
     // --- entradas que o OS não traz ---
     const cli = clientesDoMes.get(comp);
@@ -338,7 +344,7 @@ export function completarMensal(
     const origemDe = (refs: string[]): Origem =>
       refs.reduce<Origem>((o, r) => pior(o, pegar(r)?.origem ?? "os"), "os");
 
-    const calcularCAC = (ind: IndicadorOS, no: No): { v: number; origem: Origem; nota: string } | null => {
+    const calcularCAC = (ind: IndicadorOS, no: No): { v: number; origem: Origem; nota: string; faltam: string[] } | null => {
       if (!lista || no.t !== "op" || no.op !== "/") return null;
       const { refs } = refsDe(no.a);
       const novos = avaliar(no.b, leitura, () => null);
@@ -352,7 +358,7 @@ export function completarMensal(
       const nota = ehMkt
         ? "Estimado: Investimentos + Comissões + ADS ÷ novos clientes (1 custo da fórmula do OS não é identificável)."
         : `Custos do OS menos ${FORA_DO_CAC.join(", ")}, mais ADS, ÷ novos clientes.`;
-      return { v: (custosDaRegra + ads) / novos, origem, nota };
+      return { v: (custosDaRegra + ads) / novos, origem, nota: nota + notaDeFalta(faltasDe(refsDe(no.b).refs)), faltam: faltasDe(refsDe(no.b).refs) };
     };
 
     // O número que o OS entregou pronto NUNCA é trocado aqui, mesmo quando a fórmula dele dá
@@ -367,7 +373,7 @@ export function completarMensal(
 
         if (ind.id === cacTotal?.id || ind.id === cacMkt?.id) {
           const r = calcularCAC(ind, no);
-          if (r) mudou = gravar(ind.id, r.v, r.origem, r.nota) || mudou;
+          if (r) mudou = gravar(ind.id, r.v, r.origem, r.nota, r.faltam) || mudou;
           continue;
         }
 
@@ -375,16 +381,23 @@ export function completarMensal(
         const v = avaliar(no, leitura, custo);
         if (v != null) {
           const base = origemDe(refs);
-          mudou = gravar(ind.id, v, pior("hub", base), cs.length ? "Calculado pelo Hub com a fórmula do OS (custo de os_custos)." : "Calculado pelo Hub com a fórmula do OS.") || mudou;
+          const f = faltasDe(refs);
+          mudou = gravar(ind.id, v, pior("hub", base),
+            (cs.length ? "Calculado pelo Hub com a fórmula do OS (custo de os_custos)." : "Calculado pelo Hub com a fórmula do OS.") + notaDeFalta(f),
+            f) || mudou;
           continue;
         }
 
         if (aceitarParcial && ehSomaPura(no)) {
           const presentes = refs.filter((r) => leitura(r) != null);
           if (!presentes.length) continue;
-          const faltaram = refs.filter((r) => leitura(r) == null).map((r) => porId.get(r)?.canal ?? "?");
+          const faltaram = [...new Set([
+            ...refs.filter((r) => leitura(r) == null).map((r) => porId.get(r)?.canal ?? "?"),
+            ...faltasDe(presentes),
+          ])];
           const soma = presentes.reduce((a, r) => a + (leitura(r) as number), 0);
-          mudou = gravar(ind.id, soma, "hub_parcial", `Parcial: soma dos canais que lançaram; faltou ${[...new Set(faltaram)].join(", ")}.`) || mudou;
+          mudou = gravar(ind.id, soma, "hub_parcial",
+            `Incompleto: soma dos canais que lançaram; ${faltaram.join(", ")} não lançou o mês.`, faltaram) || mudou;
         }
       }
       if (!mudou) {

@@ -24,6 +24,7 @@ import { compartilharNativo, copiar, temCompartilhamentoNativo } from "@/lib/com
 import { mensagemDaTarefa, urlDaTarefa } from "@/lib/tarefas/link";
 import { emDias, fmtData, hojeISO } from "@/lib/mobile/formato";
 import { lerPrazo } from "@/lib/tarefas/prazo";
+import { avisoDeConclusao, textoDoAviso } from "@/lib/tarefas/conclusao";
 import { iniciais, mesmaPessoa, pessoasConhecidas, rotuloResponsavel, type Pessoa } from "@/lib/mobile/responsavel";
 import {
   agrupar, aplicarFiltro, estaAtrasada, statusDisponiveis,
@@ -40,6 +41,8 @@ type Tarefa = TarefaMin & {
   subtarefas: Subtarefa[];
   created_at: string;
   arquivada_em?: string | null;
+  /* Só lida, para o aviso de concluir antes do prazo dizer que a rotina segue. */
+  rotina_cadencia?: unknown;
 };
 
 const PAGINA_CONCLUIDAS = 20;
@@ -183,11 +186,11 @@ export default function MobileTarefas() {
     /* Concluir o que só vence adiante tem de ser escolha, não toque errado — no
        celular menos ainda se lê a data. Mesma confirmação do quadro. */
     if (status === STATUS_CONCLUIDO && alvo.status !== STATUS_CONCLUIDO) {
-      const p = lerPrazo(alvo.prazo);
-      if ((p.dias ?? 0) > 0 &&
-          !confirm(`"${alvo.titulo}" só vence em ${p.data} (${p.distancia}). Concluir mesmo assim?`)) {
-        return;
-      }
+      /* O texto é o mesmo do quadro (src/lib/tarefas/conclusao.ts). */
+      const aviso = avisoDeConclusao({
+        titulo: alvo.titulo, prazoAntes: alvo.prazo, rotina: !!alvo.rotina_cadencia,
+      });
+      if (aviso && !confirm(textoDoAviso(aviso))) return;
     }
     const patch: Partial<Tarefa> = { status };
     // `concluido_em` é o carimbo de quando saiu da fila. Reabrir limpa: um carimbo velho

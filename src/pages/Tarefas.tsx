@@ -39,6 +39,11 @@ import { AnaliseSemanal } from "@/components/tarefas/AnaliseSemanal";
 import { HistoricoTarefas } from "@/components/tarefas/HistoricoTarefas";
 import { calcIdade, explicaIdade } from "@/lib/tarefas/idade";
 import { lerPrazo, prazoAtrasado } from "@/lib/tarefas/prazo";
+import { avisoDeConclusao, type AvisoConclusao } from "@/lib/tarefas/conclusao";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { comparaPrioridade } from "@/lib/tarefas/prioridade";
 import { AREAS, AREA_NAO_CLASSIFICADA, corDaArea, rotuloClassificacao } from "@/lib/tarefas/classificacao";
 import { RevisaoClassificacao } from "@/components/tarefas/RevisaoClassificacao";
@@ -222,18 +227,24 @@ function isAtrasada(t: Tarefa) {
  * Concluir um card que só vence lá na frente quase sempre é engano de faxina: a
  * pessoa está limpando o quadro e não leu a data. Não é proibido — quem adianta
  * trabalho existe —, mas tem de ser escolha, e não efeito colateral de um
- * arrastão. Foi assim que a Pauta de 11/09 foi fechada no dia 09, e por dois dias
- * ninguém soube que o card de sexta não viria.
- * Devolve `false` quando a pessoa desiste.
+ * arrastão. Foi assim que a Pauta de 11/09 foi fechada no dia 09.
+ *
+ * O texto mora em src/lib/tarefas/conclusao.ts. Era um `confirm()` do navegador
+ * ("hub-findash.vercel.app diz", OK/Cancelar) com uma frase só — e em 18/09 ele
+ * falou de uma data que o próprio diálogo tinha trocado em silêncio. Agora é um
+ * diálogo do Hub, e ele diz quando a data está mudando.
+ * `null` = não há o que perguntar.
  */
-function confirmaConclusaoAdiantada(antes: Tarefa, patch: Partial<Tarefa>): boolean {
-  if (patch.status !== "Concluído" || antes.status === "Concluído") return true;
-  /* O prazo que vale é o que está sendo gravado: no diálogo dá para mudar a data
-     e concluir no mesmo salvar, e perguntar sobre a data velha seria ruído. */
-  const prazo = "prazo" in patch ? patch.prazo ?? null : antes.prazo;
-  const p = lerPrazo(prazo);
-  if ((p.dias ?? 0) <= 0) return true;
-  return confirm(`"${antes.titulo}" só vence em ${p.data} (${p.distancia}). Concluir mesmo assim?`);
+function avisoParaConcluir(antes: Tarefa, patch: Partial<Tarefa>): AvisoConclusao | null {
+  if (patch.status !== "Concluído" || antes.status === "Concluído") return null;
+  return avisoDeConclusao({
+    titulo: patch.titulo ?? antes.titulo,
+    prazoAntes: antes.prazo,
+    /* O prazo que vale é o que está sendo gravado: no diálogo dá para mudar a
+       data e concluir no mesmo salvar. */
+    prazoDepois: "prazo" in patch ? patch.prazo ?? null : antes.prazo,
+    rotina: !!(patch.rotina_cadencia ?? antes.rotina_cadencia),
+  });
 }
 
 /**
@@ -422,6 +433,9 @@ export default function Tarefas() {
   const [search, setSearch] = useState("");
   const [concluidoCollapsed, setConcluidoCollapsed] = useState(true);
   const [editing, setEditing] = useState<Tarefa | null>(null);
+  /* A pergunta de "concluir antes do prazo" à espera de resposta, com o que fazer
+     se a pessoa seguir. Serve tanto ao arrasto no quadro quanto ao Salvar. */
+  const [pendente, setPendente] = useState<{ aviso: AvisoConclusao; seguir: () => void } | null>(null);
   const [creating, setCreating] = useState(false);
   const [revisando, setRevisando] = useState(false);
   const [creatingStatus, setCreatingStatus] = useState<string>("Backlog");
@@ -749,7 +763,8 @@ export default function Tarefas() {
 
   const mover = (id: string, status: string) => {
     const t = rows.find(r => r.id === id);
-    if (t && !confirmaConclusaoAdiantada(t, { status })) return;
+    const aviso = t ? avisoParaConcluir(t, { status }) : null;
+    if (aviso) { setPendente({ aviso, seguir: () => update(id, { status }) }); return; }
     update(id, { status });
   };
 
@@ -1046,16 +1061,47 @@ export default function Tarefas() {
            clicava de novo). O toast fica aqui, e não dentro de `update`, porque
            `update` também é chamado ao arrastar card no kanban — ali avisar a cada
            arraste seria barulho. */
-        onSave={async (patch) => {
+        onSave={(patch) => {
           if (!editing) return;
-          if (!confirmaConclusaoAdiantada(editing, patch)) return;
-          if (await update(editing.id, patch)) {
-            toast.success("Tarefa salva");
-            setEditing(null);
-          }
+          const alvo = editing;
+          const gravar = async () => {
+            if (await update(alvo.id, patch)) {
+              toast.success("Tarefa salva");
+              setEditing(null);
+            }
+          };
+          const aviso = avisoParaConcluir(alvo, patch);
+          if (aviso) setPendente({ aviso, seguir: gravar });
+          else gravar();
         }}
         title="Editar Tarefa"
       />
+
+      {/* Cancelar fecha só esta pergunta: o diálogo da tarefa, se estava aberto,
+          continua ali com tudo o que foi digitado. */}
+      <AlertDialog open={!!pendente} onOpenChange={(o) => !o && setPendente(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{pendente?.aviso.titulo}</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                {pendente?.aviso.linhas.map((l, i) => (
+                  <p key={i} className={cn(i === 0 && "font-medium text-foreground",
+                    l.startsWith("Atenção:") && "font-medium text-warn")}>{l}</p>
+                ))}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Voltar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { const s = pendente?.seguir; setPendente(null); s?.(); }}
+            >
+              {pendente?.aviso.confirmar}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

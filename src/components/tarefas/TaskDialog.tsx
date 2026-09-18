@@ -217,20 +217,30 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
   const prazoSugerido = cadenciaAtiva ? ajustarPrazoACadencia(cadenciaAtiva, prazo) : null;
   const prazoEfetivo = prazo || (prazoSugerido ?? "");
   const prazoDaRotina = !!cadenciaAtiva;
-  /* Divergencia que a pessoa PRECISA ver: ela digitou uma data, e a regra que
-     ela mesma escreveu nao produz aquele dia. */
-  const prazoDiverge = !!cadenciaAtiva && !!prazo && !ehDataDaCadencia(cadenciaAtiva, deIso(prazo));
   /* A distancia ao lado do campo: "em 7 d" / "hoje" / "há 3 d". O input de data
      mostra 11/09/2026 e 18/09/2026 com a mesma cara, e é aqui que a pessoa
      decide concluir — ver src/lib/tarefas/prazo.ts. */
   const leituraPrazo = lerPrazo(prazoEfetivo || null, { concluida: status === "Concluído" });
+  /* Divergencia que a pessoa PRECISA ver: uma data AINDA POR VIR que a regra que
+     ela mesma escreveu nao produz. Data que ja chegou nao diverge de nada — e um
+     adiamento (16/09 → 17/09 numa rotina de dia 16) e historia, nao erro. Marcar
+     de amarelo e oferecer "usar 21/09" ali convidaria a juntar duas ocorrencias
+     num cartao so e esconder que a do dia 16 nao foi feita. */
+  const prazoDiverge = !!cadenciaAtiva && !!prazo && (leituraPrazo.dias ?? 0) > 0
+    && !ehDataDaCadencia(cadenciaAtiva, deIso(prazo));
 
-  useEffect(() => {
-    if (!cadenciaAtiva) return;
-    const ajustado = ajustarPrazoACadencia(cadenciaAtiva, prazo);
+  /* O prazo se alinha a cadencia QUANDO A PESSOA MEXE NA ROTINA — e so entao.
+     Antes era um efeito sobre [rotina, cadencia], que dispara tambem ao ABRIR o
+     cartao (o reset do estado muda as duas). Em 18/09/2026 foi isso que jogou o
+     "Relatório Caixa Semanal" de 17/09 (adiado a mao) para 21/09 sem ninguem
+     tocar em nada, e a tela de concluir passou a dizer que ele "so vencia em
+     21/09". Abrir um cartao nunca pode mudar a data dele. */
+  const aplicarCadencia = (nova: Cadencia | null) => {
+    setCadencia(nova);
+    if (!nova || !cadenciaValida(nova)) return;
+    const ajustado = ajustarPrazoACadencia(nova, prazo);
     if (ajustado) setPrazo(ajustado);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rotina, cadencia]);
+  };
 
   /* Traz os pagamentos da agenda como SUBTAREFA de verdade — marcavel, editavel
      e salva com a tarefa. Antes isto era so prevIa, e a tarefa recem-criada
@@ -487,8 +497,8 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
                      em vez de um bloco vazio: a pergunta seguinte é sempre
                      "quando?", e deixar o padrão pronto é o que faz a resposta
                      custar um clique. Quem não quer agenda escolhe "Sem agenda". */
-                  if (v && !cadencia) setCadencia(CADENCIA_PADRAO);
-                  if (!v) setCadencia(null);
+                  if (v) aplicarCadencia(cadencia ?? CADENCIA_PADRAO);
+                  else setCadencia(null);
                 }}
                 className="mt-0.5"
               />
@@ -513,7 +523,7 @@ export function TaskDialog({ columns, open, tarefa, defaultStatus, onClose, onSa
               </div>
               <CadenciaEditor
                 cadencia={cadencia}
-                onCadencia={setCadencia}
+                onCadencia={aplicarCadencia}
                 antecedencia={antecedencia}
                 onAntecedencia={setAntecedencia}
                 ativa={rotinaAtiva}

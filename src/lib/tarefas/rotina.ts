@@ -167,15 +167,25 @@ export function ehDataDaCadencia(c: Cadencia | null | undefined, d: Date): boole
  * A âncora é o prazo ATUAL, não hoje: quem escreveu 05/09 numa rotina de dias
  * 6, 16, 21, 26 e 31 queria o dia 6, não o próximo da lista contado de hoje.
  * Puxar para "o mais próximo a partir do que a pessoa escreveu" preserva a
- * intenção; só quando esse prazo já passou é que a conta recomeça de hoje,
- * porque data vencida não serve para nada.
+ * intenção.
  *
- * ATRASO NÃO É DIVERGÊNCIA. Um prazo que a cadência produz continua valendo
- * mesmo vencido: aquela ocorrência está atrasada, e empurrá-la para a data
- * seguinte apagaria o atraso — que é a informação mais útil que o cartão tem.
- * Só se conserta a contradição: prazo que a regra NÃO produz.
+ * PRAZO QUE JÁ CHEGOU NÃO SE MEXE — nem vencido, nem de hoje, nem quando a
+ * cadência não produz aquele dia. Uma data no passado não é uma regra mal
+ * escrita: é um fato, e quase sempre um ADIAMENTO. Foi o que aconteceu com o
+ * "Relatório Caixa Semanal" (dias 6, 16, 21, 26 e 31): a ocorrência nasceu do
+ * cron com prazo 16/09, o Henrique a adiou à mão para 17/09 ("não deu hoje,
+ * faço amanhã") e, no dia 18, bastou ABRIR o cartão para a conta recomeçar de
+ * hoje e cravar 21/09. O quadro dizia "17/09 · ontem" e o Hub perguntava se ele
+ * queria mesmo concluir uma tarefa que "só vence em 21/09". O adiamento tinha
+ * sido desfeito em silêncio, e junto com ele o atraso — que é a informação mais
+ * útil que o cartão carrega.
  *
- * Devolve `null` quando não há o que ajustar (sem cadência, ou o prazo já bate).
+ * Sobra, então, só o caso em que o conserto é mesmo conserto: prazo AINDA NO
+ * FUTURO (ou vazio) num dia que a regra não produz. Aí ninguém adiou nada; a
+ * regra acabou de ser escrita e a data que estava lá é resto.
+ *
+ * Devolve `null` quando não há o que ajustar (sem cadência, prazo já chegado, ou
+ * o prazo já bate com a regra).
  */
 export function ajustarPrazoACadencia(
   c: Cadencia | null | undefined,
@@ -185,12 +195,12 @@ export function ajustarPrazoACadencia(
   if (!cadenciaValida(c)) return null;
   const hojeD = dia(hoje);
   const atual = prazoISO ? deIso(prazoISO) : null;
+  if (atual && atual <= hojeD) return null;
   if (atual && ehDataDaCadencia(c, atual)) return null;
 
-  const ancora = atual && atual > hojeD ? atual : hojeD;
-  const alvo = proximaData(c, ancora);
+  const alvo = proximaData(c, atual ?? hojeD);
   if (!alvo) return null;
-  return prazoISO && iso(alvo) === prazoISO ? null : iso(alvo);
+  return iso(alvo) === prazoISO ? null : iso(alvo);
 }
 
 /* ------------------------------------------------------------------ texto -- */

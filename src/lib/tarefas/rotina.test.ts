@@ -112,9 +112,28 @@ describe("ajustarPrazoACadencia — a data da tarefa não pode contradizer a reg
     expect(ajustarPrazoACadencia(c, "2026-07-15", hoje)).toBeNull();
   });
 
-  it("prazo torto E vencido recomeça a conta de hoje, não do passado", () => {
+  it("ADIAMENTO TAMBÉM NÃO: data vencida fora da cadência fica onde está", () => {
+    // Caso real de 18/09/2026, "Relatório Caixa Semanal": o cron criou a
+    // ocorrência com prazo 16/09 e o Henrique a adiou à mão para 17/09. Abrir o
+    // cartão no dia 18 jogava o prazo para 21/09 — desfazendo o adiamento e
+    // apagando o atraso, e depois acusando quem concluía de fechar tarefa do
+    // futuro. Prazo que já chegou é fato, não regra mal escrita.
+    const c: Cadencia = { tipo: "mensal", dias: [6, 16, 21, 26, 31] };
+    expect(ajustarPrazoACadencia(c, "2026-09-17", deIso("2026-09-18"))).toBeNull();
+    // Nem mesmo no próprio dia: 17/09 visto em 17/09 continua sendo hoje.
+    expect(ajustarPrazoACadencia(c, "2026-09-17", deIso("2026-09-17"))).toBeNull();
+  });
+
+  it("prazo torto e vencido de outra cadência também fica onde está", () => {
     const c: Cadencia = { tipo: "mensal", dias: [15] };
-    expect(ajustarPrazoACadencia(c, "2026-07-08", hoje)).toBe("2026-09-15");
+    expect(ajustarPrazoACadencia(c, "2026-07-08", hoje)).toBeNull();
+  });
+
+  it("prazo torto AINDA NO FUTURO é que se conserta", () => {
+    // Aqui ninguém adiou nada: a regra acabou de ser escrita e a data que estava
+    // no campo é resto. Ancora no que a pessoa escreveu, não em hoje.
+    const c: Cadencia = { tipo: "mensal", dias: [15] };
+    expect(ajustarPrazoACadencia(c, "2026-10-08", hoje)).toBe("2026-10-15");
   });
 
   it("prazo vazio recebe a próxima data", () => {

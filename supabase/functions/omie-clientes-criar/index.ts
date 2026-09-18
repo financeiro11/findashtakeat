@@ -2494,14 +2494,79 @@ Deno.serve(async (req) => {
          para outro cadastro. */
       const filtros = [`cnpj_cpf.eq.${doc}`];
       if (codigos.length) filtros.push(`n_cod_cli.in.(${codigos.join(",")})`);
-      if (cobrancas.length) filtros.push(`c_cod_int_os.in.(${cobrancas.map((c) => c.id_asaas).join(",")})`);
+      if (cobrancas.length) {
+        const lista = cobrancas.map((c) => c.id_asaas).join(",");
+        filtros.push(`c_cod_int_os.in.(${lista})`);
+        /* A OS CANCELADA OU APOSENTADA troca de carimbo (`pay_x-cancelada-19649`)
+           e guarda o velho em `carimbo_original`. Sem este filtro, a nota que o
+           refazer cancelou sumia da ficha — justo a que explica por que a
+           cobrança está sem nota. */
+        filtros.push(`carimbo_original.in.(${lista})`);
+      }
       const { data: osR } = await supabase.from("nf_os_omie")
-        .select("n_cod_os, c_num_os, c_cod_int_os, n_cod_cli, valor, nfse_numero, nfse_status, nfse_mensagem, nfse_verificacao, faturada, cancelada, data_faturamento, data_previsao")
+        .select("n_cod_os, c_num_os, c_cod_int_os, carimbo_original, n_cod_cli, valor, nfse_numero, nfse_status, nfse_mensagem, nfse_verificacao, faturada, cancelada, data_faturamento, data_previsao")
         .or(filtros.join(",")).order("n_cod_os", { ascending: false }).limit(25);
-      const notas = (osR ?? []).map((n: any) => ({
+      const notasCruas = (osR ?? []).map((n: any) => ({
         ...n,
         outro_cliente: codigos.length > 0 && n.n_cod_cli != null && !codigos.includes(Number(n.n_cod_cli)),
       }));
+
+      /* QUEM É O "OUTRO CLIENTE". O código solto (5513793357) não diz a ninguém
+         para que empresa a nota foi; o nome e o CNPJ dizem. Espelho primeiro; o
+         Omie ao vivo só para o que o espelho não tiver, e no máximo três. */
+      const alheios = [...new Set(notasCruas.filter((n: any) => n.outro_cliente).map((n: any) => Number(n.n_cod_cli)))];
+      const quemE = new Map<number, { nome: string | null; doc: string | null }>();
+      if (alheios.length) {
+        const { data: esp } = await supabase.from("omie_clientes_endereco")
+          .select("codigo, cnpj_cpf, nome").in("codigo", alheios);
+        for (const e of esp ?? []) {
+          quemE.set(Number(e.codigo), { nome: limpo(e.nome) || null, doc: soDigitos(e.cnpj_cpf) || null });
+        }
+        for (const cod of alheios.filter((c) => !quemE.get(c)?.nome).slice(0, 3)) {
+          const { cadastro } = await cadastroOmie(cod);
+          if (cadastro) {
+            quemE.set(cod, {
+              nome: limpo(cadastro.razao_social) || limpo(cadastro.nome_fantasia) || null,
+              doc: soDigitos(cadastro.cnpj_cpf) || null,
+            });
+          }
+        }
+      }
+      const notas = notasCruas.map((n: any) => ({
+        ...n,
+        cliente_os_nome: n.outro_cliente ? quemE.get(Number(n.n_cod_cli))?.nome ?? null : null,
+        cliente_os_doc: n.outro_cliente ? quemE.get(Number(n.n_cod_cli))?.doc ?? null : null,
+      }));
+
+      /* A NOTA DE CADA COBRANÇA — é o que decide se a linha oferece "Emitir".
+         Conta a OS viva do Omie (pelo carimbo atual) e a nota AUTORIZADA do
+         Asaas de antes do corte; nota do Asaas em ERROR não é nota. A emissão
+         confere tudo de novo no servidor: isto só escolhe o que mostrar. */
+      const { data: invR } = cobrancas.length
+        ? await supabase.from("asaas_cache").select("pagamento_ref, status, dados")
+          .eq("tipo", "invoice").in("pagamento_ref", cobrancas.map((c) => c.id_asaas))
+        : { data: [] as any[] };
+      const doAsaas = new Map<string, string>();
+      for (const i of invR ?? []) {
+        if (String(i.status).toUpperCase() === "AUTHORIZED") {
+          doAsaas.set(String(i.pagamento_ref), String(i.dados?.number ?? "") || "autorizada");
+        }
+      }
+      for (const c of cobrancas as any[]) {
+        const os = notas.find((n: any) => n.c_cod_int_os === c.id_asaas && !n.cancelada);
+        const asaas = doAsaas.get(c.id_asaas);
+        c.nota = os
+          ? os.faturada
+            ? os.nfse_status === "004"
+              ? { situacao: "tem_nota", rotulo: `NFS-e ${os.nfse_numero ?? ""}`.trim(), n_cod_os: os.n_cod_os }
+              : os.nfse_status === "003"
+              ? { situacao: "recusada", rotulo: "nota recusada", n_cod_os: os.n_cod_os }
+              : { situacao: "no_forno", rotulo: "nota a caminho", n_cod_os: os.n_cod_os }
+            : { situacao: "os_aberta", rotulo: `OS ${os.c_num_os ?? os.n_cod_os} aberta`, n_cod_os: os.n_cod_os }
+          : asaas
+          ? { situacao: "tem_nota", rotulo: `nota do Asaas ${asaas}`, n_cod_os: null }
+          : { situacao: "sem_nota", rotulo: null, n_cod_os: null };
+      }
 
       /* A COMPARAÇÃO. A nota sai com o que está no OMIE; o Asaas é a fonte do
          endereço desde 15/09/2026; a Receita é o registro oficial. */

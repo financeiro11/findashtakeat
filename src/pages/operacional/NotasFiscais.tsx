@@ -58,9 +58,10 @@ import {
   LiberarAntesDoPagamento, ListaAntesDoPagamento, lerAntesDoPagamento, ICONE_TIPO,
   type EntradaAntesDoPagamento, type CobrancaParaLiberar,
 } from "@/components/notas/AntesDoPagamento";
-import { EmitirAgora, type EmissaoSemCobranca } from "@/components/notas/EmitirAgora";
+import { iniciarEmissao, type EmissaoSemCobranca } from "@/components/notas/EmitirAgora";
+import { abrirTarefa } from "@/lib/segundo-plano";
 import { NotaSemCobranca } from "@/components/notas/NotaSemCobranca";
-import { RefazerNotaOmie } from "@/components/notas/RefazerNotaOmie";
+import { RefazerNotaOmie, type TomadorErrado } from "@/components/notas/RefazerNotaOmie";
 import { FichaCliente } from "@/components/notas/FichaCliente";
 
 const dorme = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -176,13 +177,37 @@ export default function NotasFiscais() {
    * `null` = ninguém emitindo. Ver `EmitirAgora`: é ele que cadastra o tomador
    * que falta, dispara o lote, espera a prefeitura e grava o número, em vez de
    * devolver um erro por pré-requisito. */
-  const [emitindoAgora, setEmitindoAgora] = useState<{
-    ids: string[]; osRecusadas?: number[]; semCobranca?: EmissaoSemCobranca;
-    /** Texto da nota que veio de outro diálogo (o refazer), e não do campo da tela. */
-    observacao?: string;
-  } | null>(null);
+  /* A EMISSÃO É UMA TAREFA EM SEGUNDO PLANO (18/09/2026) — ver `iniciarEmissao`.
+     A página só a dispara e abre o andamento; fechar a janela não para nada. */
+  const emitirEmSegundoPlano = (p: {
+    ids: string[]; osRecusadas?: number[]; semCobranca?: EmissaoSemCobranca; motivoRecusa?: string | null;
+  }) => {
+    const id = iniciarEmissao(
+      {
+        ids: p.ids,
+        cobrancas: p.ids.map((i) => {
+          const l = linhas.find((x) => x.id_asaas === i);
+          return { id_asaas: i, nome: l?.cliente_asaas ?? null, valor: Number(l?.valor ?? 0) };
+        }),
+        osRecusadas: p.osRecusadas,
+        motivoRecusa: p.motivoRecusa,
+        semCobranca: p.semCobranca ?? null,
+        /* A observação e a chave da avulsa são da tela do mês, feitas para
+           cobranças. A nota sem cobrança já traz a descrição inteira que a
+           pessoa digitou. */
+        observacao: p.semCobranca ? null : observacao,
+        avulsa: p.semCobranca ? false : avulsa,
+      },
+      () => { void carregar(); setVersaoFicha((v) => v + 1); },
+    );
+    abrirTarefa(id);
+  };
   /** A nota do Omie sendo refeita — ver `RefazerNotaOmie`. */
   const [refazendoOmie, setRefazendoOmie] = useState<LinhaNota | null>(null);
+  /** Quando o refazer veio da Ficha: a empresa para onde a nota foi por engano. */
+  const [tomadorErrado, setTomadorErrado] = useState<TomadorErrado | null>(null);
+  /** Sobe quando uma emissão ou um refazer termina — a ficha aberta relê. */
+  const [versaoFicha, setVersaoFicha] = useState(0);
   /* A FICHA DO CLIENTE aberta — o que buscar (documento, nome, pay_/cus_);
      `null` = fechada. Nasce do `?cliente=` para o link da ficha abrir direto. */
   const [fichaBusca, setFichaBusca] = useState<string | null>(() => {
@@ -426,7 +451,7 @@ export default function NotasFiscais() {
      * sozinho). Repetir um `window.confirm` aqui seria pedir a mesma autorização
      * duas vezes em dez segundos, que é como se ensina alguém a clicar em OK sem
      * ler. */
-    if (emitirAgora) setEmitindoAgora({ ids: [idAsaas] });
+    if (emitirAgora) emitirEmSegundoPlano({ ids: [idAsaas] });
   };
 
   const alternar = (id: string) => {
@@ -512,7 +537,7 @@ export default function NotasFiscais() {
      * A CONFIRMAÇÃO ACIMA FICA, e fica antes: ela é a única coisa nesta tela que
      * fala de uma escrita fiscal irreversível, e não pode virar um passo de uma
      * barra de progresso que já está rodando. */
-    setEmitindoAgora({ ids });
+    emitirEmSegundoPlano({ ids });
   };
 
   /* --------------------------- refazer a nota ---------------------------- */
@@ -1121,7 +1146,6 @@ export default function NotasFiscais() {
             nasce do nada — cliente do Asaas sem cobrança, ou tomador digitado. */}
         <button
           onClick={() => setSemCobrancaAberto(true)}
-          disabled={emitindoAgora !== null}
           className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
           title={
             "Emite uma NFS-e que não tem cobrança no Asaas: puxe o cliente de lá ou digite o tomador inteiro.\n\n" +
@@ -1665,7 +1689,9 @@ export default function NotasFiscais() {
                         isso é o passo 1 da mesma corrente de emissão. */}
                     {l.situacao === "nota_rejeitada" && l.n_cod_os && (
                       <button
-                        onClick={() => setEmitindoAgora({ ids: [l.id_asaas], osRecusadas: [Number(l.n_cod_os)] })}
+                        onClick={() => emitirEmSegundoPlano({
+                          ids: [l.id_asaas], osRecusadas: [Number(l.n_cod_os)], motivoRecusa: motivoCurto(l.nfse_mensagem),
+                        })}
                         disabled={emitindo}
                         className="ghost-btn mt-1 flex items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[10px] text-primary disabled:opacity-40"
                         title={
@@ -1756,37 +1782,27 @@ export default function NotasFiscais() {
         onFechar={() => setSemCobrancaAberto(false)}
         onPronto={(nota) => {
           setSemCobrancaAberto(false);
-          setEmitindoAgora({ ids: [nota.id], semCobranca: nota });
+          emitirEmSegundoPlano({ ids: [nota.id], semCobranca: nota });
         }}
       />
-      {emitindoAgora && (
-        <EmitirAgora
-          aberto
-          ids={emitindoAgora.ids}
-          osRecusadas={emitindoAgora.osRecusadas}
-          semCobranca={emitindoAgora.semCobranca ?? null}
-          linhas={linhas}
-          /* A observação e a chave da avulsa são da tela do mês, feitas para
-             cobranças. A nota sem cobrança já traz a descrição inteira que a
-             pessoa digitou — somar a observação de outra seleção seria texto de
-             outro ato dentro desta nota. */
-          observacao={emitindoAgora.semCobranca ? null : (emitindoAgora.observacao ?? observacao)}
-          avulsa={emitindoAgora.semCobranca ? false : avulsa}
-          onFechar={() => setEmitindoAgora(null)}
-          onTerminou={carregar}
-        />
-      )}
       <RefazerNotaOmie
         linha={refazendoOmie}
         linhas={linhas}
-        onRecarregar={() => void carregar()}
-        onFechar={() => setRefazendoOmie(null)}
-        onEmitir={(id, obs) => {
-          setRefazendoOmie(null);
-          setEmitindoAgora({ ids: [id], observacao: obs });
+        tomadorErrado={tomadorErrado}
+        onRecarregar={() => { void carregar(); setVersaoFicha((v) => v + 1); }}
+        onFechar={() => { setRefazendoOmie(null); setTomadorErrado(null); }}
+      />
+      <FichaCliente
+        busca={fichaBusca}
+        onFechar={() => setFichaBusca(null)}
+        versao={versaoFicha}
+        onMudou={() => void carregar()}
+        onRefazer={(linha, errado) => {
+          // A linha do painel, quando a cobrança está no mês aberto, é a mais completa.
+          setTomadorErrado(errado);
+          setRefazendoOmie(linhas.find((l) => l.id_asaas === linha.id_asaas) ?? linha);
         }}
       />
-      <FichaCliente busca={fichaBusca} onFechar={() => setFichaBusca(null)} />
     </div>
   );
 }

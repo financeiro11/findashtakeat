@@ -30,9 +30,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, RefreshCw, ArrowRight, TriangleAlert, CheckCircle2, Hourglass } from "lucide-react";
+import { Loader2, RefreshCw, ArrowRight, TriangleAlert, CheckCircle2 } from "lucide-react";
 import { EditarCadastroCliente, type ClienteEditavel } from "./EditarCadastroCliente";
 import { formatarDoc, type LinhaNota } from "@/lib/notasFiscais";
+import { abrirTarefa } from "@/lib/segundo-plano";
+import { iniciarRefazer } from "./refazer-tarefa";
 
 const sb = supabase as any;
 
@@ -64,19 +66,24 @@ interface Diagnostico extends ClienteEditavel {
   diff: LinhaDiff[];
 }
 
-type Fase = "lendo" | "pronto" | "cadastro" | "cancelando" | "em_andamento";
+type Fase = "lendo" | "pronto";
+
+/** A empresa para onde a nota FOI, quando a OS apontava para outro cadastro do Omie. */
+export interface TomadorErrado { codigo: number | null; nome: string | null; doc: string | null }
 
 export function RefazerNotaOmie({
-  linha, linhas, onFechar, onEmitir, onRecarregar,
+  linha, linhas, tomadorErrado, onFechar, onRecarregar,
 }: {
   /** A linha da nota a refazer; `null` fecha o diálogo. */
   linha: LinhaNota | null;
+  /* A NOTA FOI PARA OUTRA EMPRESA (a EMME saiu para a Vespera). O ato é o mesmo —
+     a OS nova nasce com o cadastro do CNPJ da cobrança —, mas quem confirma
+     precisa ver as duas empresas antes de cancelar. */
+  tomadorErrado?: TomadorErrado | null;
   /** As linhas do mês — é nelas que se procura a cobrança substituta. */
   linhas: LinhaNota[];
   onFechar: () => void;
-  /** Cancelada a velha, a emissão da certa segue pelo `EmitirAgora`. */
-  onEmitir: (id: string, observacao: string) => void;
-  /** Cancelou sem ter por onde emitir: a tela de trás relê. */
+  /** A tarefa terminou (com ou sem nota nova): a tela de trás relê. */
   onRecarregar: () => void;
 }) {
   const [fase, setFase] = useState<Fase>("lendo");
@@ -89,7 +96,6 @@ export function RefazerNotaOmie({
   const [diag, setDiag] = useState<Diagnostico | null>(null);
   const [justificativa, setJustificativa] = useState("");
   const [observacao, setObservacao] = useState("");
-  const [recado, setRecado] = useState<string | null>(null);
 
   const id = linha?.id_asaas ?? "";
 
@@ -107,7 +113,14 @@ export function RefazerNotaOmie({
   useEffect(() => {
     if (!linha) return;
     setFase("lendo"); setDiag(null); setValorAgora(null); setVencimentoAgora(null); setExcluida(false);
-    setJustificativa(""); setObservacao(""); setRecado(null);
+    setJustificativa(
+      tomadorErrado
+        ? `NFS-e emitida para o tomador errado (${tomadorErrado.nome ?? `cadastro ${tomadorErrado.codigo} do Omie`}` +
+          `${tomadorErrado.doc ? `, ${formatarDoc(tomadorErrado.doc)}` : ""}); o correto é ` +
+          `${linha.cliente_asaas ?? "o cliente da cobrança"}${linha.cnpj_cpf ? `, ${formatarDoc(linha.cnpj_cpf)}` : ""}.`
+        : "",
+    );
+    setObservacao("");
     (async () => {
       const [cob, cad] = await Promise.allSettled([
         sb.functions.invoke("asaas-sync", { body: { action: "cobranca", id: linha.id_asaas } }),
@@ -126,7 +139,7 @@ export function RefazerNotaOmie({
       }
       setFase("pronto");
     })();
-  }, [linha, lerCadastro]);
+  }, [linha, lerCadastro, tomadorErrado]);
 
   if (!linha) return null;
 
@@ -143,77 +156,39 @@ export function RefazerNotaOmie({
     : [];
   const substituta = candidatas.length === 1 ? candidatas[0] : null;
   const mudouValor = valorAgora != null && Math.abs(valorAgora - Number(linha.valor)) > 0.005;
-  const ocupado = fase === "lendo" || fase === "cadastro" || fase === "cancelando";
+  const lendo = fase === "lendo";
 
-  const executar = async () => {
+  const executar = () => {
     if (!justificativa.trim()) {
       toast.error("Escreva por que a nota está sendo refeita.", { description: "O Omie não guarda motivo; o diário do Hub guarda." });
       return;
     }
-    if (fase !== "em_andamento" && !window.confirm(
+    const nomeCerto = diag?.omie?.razao_social || linha.cliente_asaas || "o cliente da cobrança";
+    if (!window.confirm(
       `Cancelar a NFS-e ${linha.nfse_numero} no Omie e na prefeitura?\n\n` +
       "O cancelamento não tem volta. " +
       (!excluida
         ? "Confirmado, o Hub emite a nota certa nesta mesma cobrança" +
-          (valorAgora != null ? `, no valor de ${brlStr(valorAgora)}` : "") + "."
+          (valorAgora != null ? `, no valor de ${brlStr(valorAgora)}` : "") +
+          (tomadorErrado ? `, para ${nomeCerto} (${formatarDoc(linha.cnpj_cpf)})` : "") + "."
         : substituta
         ? `Confirmado, o Hub emite a nota certa pela cobrança nova ${substituta.id_asaas} (${brlStr(Number(substituta.valor))}).`
-        : "A cobrança desta nota foi excluída no Asaas e não há uma substituta clara na lista — nada será emitido agora."),
+        : "A cobrança desta nota foi excluída no Asaas e não há uma substituta clara na lista — nada será emitido agora.") +
+      "\n\nRoda em segundo plano: você pode fechar esta janela e seguir trabalhando.",
     )) return;
 
-    try {
-      /* 1) CADASTRO — primeiro, porque se desfaz. Só quando há o que mudar e o
-            endereço proposto é confiável; falhar aqui para tudo antes de cancelar. */
-      if (fase !== "em_andamento" && diag && !diag.bloqueio && !diag.sem_cadastro_omie && !diag.erro_leitura_omie && muda.length) {
-        setFase("cadastro");
-        const { data, error } = await sb.functions.invoke("omie-clientes-criar", {
-          body: { action: "corrigir_cadastro", doc: diag.doc, alvos: ["omie"], ids: [id] },
-        });
-        const om = data?.resultado?.omie;
-        if (error || data?.erro || (om && om.ok === false && !om.nada_a_propor)) {
-          throw new Error(`Cadastro não corrigido — nada foi cancelado. ${error || data?.erro ? await mensagemDe(error, data) : om?.motivo ?? ""}`);
-        }
-      }
-
-      /* 2) CANCELAR — no Omie e na prefeitura, e só vale confirmado. */
-      setFase("cancelando");
-      const { data, error } = await sb.functions.invoke("omie-nfse-sync", {
-        body: { action: "refazer_omie", id, justificativa: justificativa.trim() },
-      });
-      if (error || data?.erro) throw new Error(await mensagemDe(error, data));
-
-      if (data?.cancelamento_em_andamento) {
-        setFase("em_andamento");
-        setRecado(String(data.recado ?? "O cancelamento foi pedido e ainda não foi confirmado."));
-        return;
-      }
-
-      /* 3) EMITIR — a corrente de sempre, com o cadastro já corrigido e a
-            cobrança livre do carimbo da nota velha (ou pela substituta). */
-      if (data?.cobranca_excluida) {
-        if (substituta) {
-          toast.success(`NFS-e ${linha.nfse_numero} cancelada.`, { description: `Emitindo a nota certa pela cobrança ${substituta.id_asaas}…` });
-          onEmitir(substituta.id_asaas, observacao.trim());
-        } else {
-          toast.success(`NFS-e ${linha.nfse_numero} cancelada.`, {
-            description: "A cobrança dela foi excluída no Asaas. Traga a cobrança nova com “Atualizar do Asaas” e emita por ela.",
-            duration: 14000,
-          });
-          onRecarregar();
-          onFechar();
-        }
-        return;
-      }
-      toast.success(`NFS-e ${linha.nfse_numero} cancelada.`, { description: "Emitindo a nota certa nesta cobrança…" });
-      onEmitir(id, observacao.trim());
-    } catch (e: any) {
-      setFase("pronto");
-      toast.error("O refazer parou.", { description: e?.message, duration: 14000 });
-    }
+    const tarefa = iniciarRefazer({
+      linha, justificativa: justificativa.trim(), observacao: observacao.trim(),
+      corrigirCadastro: !!(diag && !diag.bloqueio && !diag.sem_cadastro_omie && !diag.erro_leitura_omie && muda.length),
+      docCadastro: diag?.doc ?? null,
+      valorAgora, substituta: excluida ? substituta : null, excluida,
+    }, onRecarregar);
+    onFechar();
+    abrirTarefa(tarefa);
   };
 
   return (
-    <Dialog open onOpenChange={(v) => !v && !ocupado && onFechar()}>
+    <Dialog open onOpenChange={(v) => !v && onFechar()}>
       <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
@@ -228,8 +203,43 @@ export function RefazerNotaOmie({
 
         <div className="space-y-3 text-xs">
           {/* A COBRANÇA — o valor que a nota nova vai levar. */}
+          {tomadorErrado && (
+            <section className="rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+              <p className="flex items-center gap-1.5 font-semibold text-destructive">
+                <TriangleAlert className="h-3.5 w-3.5" /> Esta nota foi para outra empresa
+              </p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+                <div className="min-w-0">
+                  <p className="text-[11px] text-muted-foreground">Saiu para</p>
+                  <p className="font-medium text-foreground line-through decoration-destructive/60">
+                    {tomadorErrado.nome ?? `Cadastro ${tomadorErrado.codigo ?? "?"} do Omie`}
+                  </p>
+                  <p className="num text-[11px] text-muted-foreground">
+                    {tomadorErrado.doc ? formatarDoc(tomadorErrado.doc) : "CNPJ não lido"}
+                    {tomadorErrado.codigo ? ` · Omie ${tomadorErrado.codigo}` : ""}
+                  </p>
+                </div>
+                <ArrowRight className="hidden h-4 w-4 text-muted-foreground sm:block" />
+                <div className="min-w-0">
+                  <p className="text-[11px] text-muted-foreground">A nota nova sai para</p>
+                  <p className="font-medium text-emerald-700 dark:text-emerald-400">
+                    {diag?.omie?.razao_social || linha.cliente_asaas || "o cliente da cobrança"}
+                  </p>
+                  <p className="num text-[11px] text-muted-foreground">
+                    {formatarDoc(linha.cnpj_cpf)}{diag?.n_cod_cli ? ` · Omie ${diag.n_cod_cli}` : ""}
+                  </p>
+                </div>
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                A OS nova nasce com o cadastro do Omie do CNPJ desta cobrança, e não com o da OS velha.
+                Se o CNPJ acima também estiver errado, pare aqui: corrija o cliente da cobrança no Asaas
+                primeiro, senão a nota nova vai para a mesma empresa.
+              </p>
+            </section>
+          )}
+
           <section className="rounded-lg border border-border p-3">
-            <p className="font-semibold text-foreground">{linha.cliente_asaas ?? "—"}</p>
+            <p className="font-semibold text-foreground">{linha.cliente_asaas ?? diag?.nome ?? "—"}</p>
             <p className="num text-[11px] text-muted-foreground">{formatarDoc(linha.cnpj_cpf)} · {linha.id_asaas}</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {fase === "lendo" ? (
@@ -321,7 +331,6 @@ export function RefazerNotaOmie({
                 onChange={(e) => setJustificativa(e.target.value)}
                 placeholder="Ex.: valor e endereço do tomador incorretos"
                 className="min-h-[56px] text-xs"
-                disabled={ocupado}
               />
             </label>
             <label className="block space-y-1">
@@ -331,35 +340,24 @@ export function RefazerNotaOmie({
                 onChange={(e) => setObservacao(e.target.value)}
                 placeholder="Ex.: Cessão onerosa referente a set/2026"
                 className="h-8 text-xs"
-                disabled={ocupado}
               />
             </label>
           </section>
 
-          {recado && (
-            <p className="flex items-start gap-1.5 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-400">
-              <Hourglass className="mt-0.5 h-3 w-3 shrink-0" /> {recado}
-            </p>
-          )}
-
           <div className="flex items-center justify-end gap-2">
             <button
               onClick={onFechar}
-              disabled={ocupado}
-              className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-40"
+              className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted"
             >
               Fechar
             </button>
             <button
-              onClick={() => void executar()}
-              disabled={ocupado || !justificativa.trim() || !!diag?.erro_leitura_omie}
+              onClick={executar}
+              disabled={lendo || !justificativa.trim() || !!diag?.erro_leitura_omie}
               className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
             >
-              {ocupado && fase !== "lendo" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              {fase === "cadastro" ? "Corrigindo o cadastro…"
-                : fase === "cancelando" ? "Cancelando no Omie…"
-                : fase === "em_andamento" ? "Conferir o cancelamento de novo"
-                : excluida && !substituta ? `Cancelar a ${linha.nfse_numero}`
+              <RefreshCw className="h-3.5 w-3.5" />
+              {excluida && !substituta ? `Cancelar a ${linha.nfse_numero}`
                 : `Cancelar a ${linha.nfse_numero} e emitir a certa`}
             </button>
           </div>

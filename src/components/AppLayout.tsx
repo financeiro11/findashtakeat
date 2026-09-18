@@ -4,6 +4,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { PageHeader } from "@/components/PageHeader";
 import { FaixaEsteira } from "@/components/FaixaEsteira";
+import { TarefasEmSegundoPlano } from "@/components/TarefasEmSegundoPlano";
 import { AvisoGrave } from "@/components/AvisoGrave";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { AIAssistant } from "@/components/AIAssistant";
@@ -83,6 +84,10 @@ export default function AppLayout() {
                 `data-chrome="header"`: ela acompanha a pessoa em toda página
                 (é onde a pergunta "está rodando?" aparece) e some do PDF de
                 quem imprime, junto com o resto da moldura. */}
+            {/* O que a PESSOA mandou fazer e segue rodando (emitir, refazer nota) —
+                par da faixa das automações, que responde pelo servidor. Só
+                aparece quando há tarefa; a janela de andamento mora aqui dentro. */}
+            <div className="px-1"><TarefasEmSegundoPlano /></div>
             {!isParcerias && <div className="hidden px-1 sm:block"><FaixaEsteira /></div>}
             <div className="px-3"><ProfileMenu /></div>
           </div>

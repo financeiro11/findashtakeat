@@ -320,3 +320,8 @@ verify_jwt = false
 # x-cron-token e nenhum JWT; quem entra à mão passa pelo requireUser + capacidade maquinario.
 [functions.os-indicadores-calcular]
 verify_jwt = false
+
+# Chamada pelo cron das 06:15 (disparar_automacao, x-cron-token, sem JWT); à mão, requireUser
+# + capacidade demonstracoes.
+[functions.analise-mensal-montar]
+verify_jwt = false

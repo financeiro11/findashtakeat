@@ -1,14 +1,13 @@
 -- O espelho do Takeat OS entra no repositório e passa a obedecer o crachá.
 --
 -- Em 17/09/2026 o time de RPA ligou um postgres_fdw (servidor `takeat_os`, outro projeto
--- Supabase) e criou DIRETO no banco, sem migration:
+-- Supabase) pela migration 20260917100000 (que chegou à main depois de aplicada à mão):
 --   • schema `os_sync` — 8 foreign tables apontando para o OS (sem grant para authenticated);
 --   • cópias locais `public.os_*` + `os_sync_log`;
 --   • `public.os_sync_refresh()` (TRUNCATE + INSERT de tudo) e o cron `os_sync_painel` (09:00 UTC).
 --
--- O servidor, o user mapping (tem a senha do outro banco) e as foreign tables ficam FORA do
--- repo de propósito. Aqui entram: o formato das cópias (idempotente — elas já existem), a
--- leitura por capacidade e a função de atualização consertada.
+-- Esta migration vem DEPOIS dela e corrige três coisas; os `create table if not exists`
+-- abaixo só documentam a forma das cópias (são idempotentes).
 --
 -- O que estava errado:
 --   1. Policy "os leitura logado" = `true`: qualquer sessão lia tudo, inclusive os dois

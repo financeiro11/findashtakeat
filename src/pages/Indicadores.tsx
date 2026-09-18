@@ -17,8 +17,8 @@ import { ChevronLeft, ChevronRight, Loader2, Star, Sigma, ArrowUpRight, ArrowDow
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { comValorExato } from "@/components/ValorExato";
 import {
-  type IndicadorOS, type LinhaMensalOS, type LinhaSemanalOS, type ItemPainel, type Farol, type Sentido,
-  montarPainel, resumoFarois, mesPadrao, fmtValorStr, fmtValorCurtoStr, fmtPctAtingStr, farol, atingimento, sentidoDe,
+  type IndicadorOS, type LinhaMensalOS, type LinhaSemanalOS, type ItemPainel, type BlocoCanal, type Farol, type Sentido,
+  montarPainel, resumoFarois, mesPadrao, separarConsolidado, serieAte, fmtValorStr, fmtValorCurtoStr, fmtPctAtingStr, farol, atingimento, sentidoDe,
   type Origem,
 } from "@/lib/indicadores-os";
 import { completarMensal, type CustoOS, type AssinaturaOS } from "@/lib/indicadores-os-calculo";
@@ -127,8 +127,13 @@ export default function Indicadores() {
     () => (competencia ? montarPainel(indicadores, mensal, depto, competencia, anterior) : []),
     [indicadores, mensal, depto, competencia, anterior],
   );
-  const resumo = resumoFarois(blocos);
-  const northStars = blocos.flatMap((b) => b.itens).filter((i) => i.ind.north_star);
+  // O consolidado é o que se lê; os canais são o detalhamento dele.
+  const { destaques, demaisConsolidado, canais } = useMemo(() => separarConsolidado(blocos, depto), [blocos, depto]);
+  const resumoConsolidado = resumoFarois([{ canal: "Consolidado", itens: [...destaques, ...demaisConsolidado] }]);
+  const resumoCanais = resumoFarois(canais);
+  const [abertos, setAbertos] = useState<Set<string>>(new Set());
+  const alternarCanal = (c: string) =>
+    setAbertos((a) => { const n = new Set(a); if (n.has(c)) n.delete(c); else n.add(c); return n; });
 
   if (loading) {
     return (
@@ -200,57 +205,55 @@ export default function Indicadores() {
                 <ChevronRight className="h-4 w-4" />
               </button>
             </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
-              {(["bom", "atencao", "ruim"] as const).map((f) => (
-                <span key={f} className="inline-flex items-center gap-1.5">
-                  <span className={cn("h-2 w-2 rounded-full", FAROL[f].barra)} />
-                  <span className="num font-semibold text-foreground">{resumo[f]}</span>
-                  <span className="text-muted-foreground">{FAROL[f].rotulo}</span>
-                </span>
-              ))}
-              {resumo.sem_dado + resumo.sem_meta > 0 && (
-                <span className="text-muted-foreground">
-                  · {resumo.sem_dado} sem realizado · {resumo.sem_meta} sem meta
-                </span>
-              )}
-            </div>
+            <ResumoFarois resumo={resumoConsolidado} prefixo="Consolidado:" />
           </div>
 
-          {/* ---------------- North stars ---------------- */}
-          {northStars.length > 0 && (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-              {northStars.map((i) => (
-                <CardNorthStar key={i.ind.id} item={i} onAbrir={() => setAberto(i.ind)} />
-              ))}
+          {/* ---------------- Consolidado: o protagonista ---------------- */}
+          <section className="space-y-3">
+            <div className="flex items-baseline gap-2">
+              <h2 className="text-[15px] font-semibold tracking-tight">Consolidado · {depto}</h2>
+              <span className="text-[12px] text-muted-foreground">{rotuloMes(competencia)} · realizado contra a meta do OS</span>
             </div>
-          )}
-
-          {/* ---------------- Canais ---------------- */}
-          <div className="grid gap-3 xl:grid-cols-2">
-            {blocos.map((b) => (
-              <div key={b.canal} className="card-surface overflow-hidden">
-                <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5">
-                  <div className="text-[13.5px] font-semibold">{b.canal}</div>
-                  <FaroisDoCanal itens={b.itens} />
-                </div>
-                <table className="w-full text-[12.5px]">
-                  <thead>
-                    <tr className="text-[10.5px] uppercase tracking-wider text-muted-foreground">
-                      <th className="px-4 py-1.5 text-left font-medium">Indicador</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Realizado</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Meta</th>
-                      <th className="w-[120px] px-4 py-1.5 text-left font-medium">Atingido</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {b.itens.map((i) => (
-                      <LinhaIndicador key={i.ind.id} item={i} onAbrir={() => setAberto(i.ind)} />
-                    ))}
-                  </tbody>
-                </table>
+            {destaques.length > 0 ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {destaques.map((i) => (
+                  <CardDestaque key={i.ind.id} item={i} serie={serieAte(mensal, i.ind.id, competencia)} onAbrir={() => setAberto(i.ind)} />
+                ))}
               </div>
-            ))}
-          </div>
+            ) : (
+              <p className="text-[12.5px] text-muted-foreground">O OS não tem consolidado lançado para {depto} neste mês.</p>
+            )}
+            {demaisConsolidado.length > 0 && (
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+                {demaisConsolidado.map((i) => <TileConsolidado key={i.ind.id} item={i} onAbrir={() => setAberto(i.ind)} />)}
+              </div>
+            )}
+          </section>
+
+          {/* ---------------- Canais: o detalhamento, recolhido ---------------- */}
+          {canais.length > 0 && (
+            <section className="space-y-2 pt-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-baseline gap-2">
+                  <h2 className="text-[13.5px] font-semibold text-muted-foreground">Detalhe por canal</h2>
+                  <ResumoFarois resumo={resumoCanais} pequeno />
+                </div>
+                <button
+                  type="button"
+                  className="text-[12px] text-muted-foreground hover:text-foreground"
+                  onClick={() => setAbertos(abertos.size === canais.length ? new Set() : new Set(canais.map((b) => b.canal)))}
+                >
+                  {abertos.size === canais.length ? "Recolher todos" : "Abrir todos"}
+                </button>
+              </div>
+              <div className="card-surface divide-y divide-border/60 overflow-hidden">
+                {canais.map((b) => (
+                  <CanalRecolhivel key={b.canal} bloco={b} aberto={abertos.has(b.canal)}
+                    onAlternar={() => alternarCanal(b.canal)} onAbrir={setAberto} />
+                ))}
+              </div>
+            </section>
+          )}
         </>
       ) : (
         <Semanal indicadores={indicadores} linhas={semanal} depto={depto} onAbrir={setAberto} />
@@ -359,7 +362,7 @@ function Variacao({ atual, anterior, sentido }: { atual: number | null; anterior
 function LinhaIndicador({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () => void }) {
   return (
     <tr className="cursor-pointer border-t border-border/40 hover:bg-muted/40" onClick={onAbrir}>
-      <td className="px-4 py-1.5">
+      <td className="px-4 py-1.5 pl-11">
         <span className="inline-flex items-center gap-1">
           {i.ind.north_star && <Star className="h-3 w-3 fill-primary text-primary" aria-label="North star" />}
           {i.ind.indicador}
@@ -379,25 +382,127 @@ function LinhaIndicador({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () =>
   );
 }
 
-function CardNorthStar({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () => void }) {
-  const moeda = i.ind.unidade === "BRL";
+function ResumoFarois({ resumo, prefixo, pequeno }: { resumo: Record<Farol, number>; prefixo?: string; pequeno?: boolean }) {
   return (
-    <button type="button" onClick={onAbrir} className="card-surface flex flex-col gap-1.5 p-3.5 text-left hover:border-primary/40">
+    <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1", pequeno ? "text-[11px]" : "text-[12px]")}>
+      {prefixo && <span className="text-muted-foreground">{prefixo}</span>}
+      {(["bom", "atencao", "ruim"] as const).map((f) => (
+        <span key={f} className="inline-flex items-center gap-1.5">
+          <span className={cn("h-2 w-2 rounded-full", FAROL[f].barra)} />
+          <span className="num font-semibold text-foreground">{resumo[f]}</span>
+          <span className="text-muted-foreground">{FAROL[f].rotulo}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Cartão grande do consolidado: número, meta, atingimento e os últimos 12 meses. */
+function CardDestaque({ item: i, serie, onAbrir }: {
+  item: ItemPainel;
+  serie: { competencia: string; realizado: number | null; orcado: number | null }[];
+  onAbrir: () => void;
+}) {
+  const u = i.ind.unidade;
+  const moeda = u === "BRL";
+  return (
+    <button type="button" onClick={onAbrir}
+      className="card-surface flex flex-col gap-2 p-4 text-left transition hover:border-primary/40">
       <div className="flex items-center justify-between gap-2">
-        <div className="eyebrow truncate">{i.ind.canal}</div>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="eyebrow truncate">{i.ind.indicador}</span>
+          <SeloOrigem origem={i.origem} nota={i.nota} />
+        </div>
         <span className={cn("h-2 w-2 shrink-0 rounded-full", FAROL[i.farol].barra)} title={FAROL[i.farol].rotulo} />
       </div>
-      <div className="flex items-center gap-1.5 truncate text-[12px] text-muted-foreground">
-        {i.ind.indicador} <SeloOrigem origem={i.origem} nota={i.nota} />
+      <div className="flex items-baseline gap-2">
+        <span className="num text-[30px] font-semibold leading-none tracking-tight">
+          {comValorExato(i.realizado, fmtValorCurtoStr(i.realizado, u), { moeda, casas: 2 })}
+        </span>
+        <Variacao atual={i.realizado} anterior={i.anterior} sentido={i.sentido} />
       </div>
-      <div className="num text-[22px] font-semibold leading-none tracking-tight">
-        {comValorExato(i.realizado, fmtValorCurtoStr(i.realizado, i.ind.unidade), { moeda, casas: 2 })}
+      <div className="text-[12px] text-muted-foreground">
+        {(i.orcado ?? 0) > 0
+          ? <>meta <span className="num text-foreground">{fmtValorCurtoStr(i.orcado, u)}</span></>
+          : "sem meta no OS"}
+        {i.sentido === "menor" && <span className="ml-1.5 text-[10.5px]">· menor é melhor</span>}
       </div>
-      <div className="text-[11.5px] text-muted-foreground">
-        meta <span className="num">{fmtValorCurtoStr(i.orcado || null, i.ind.unidade)}</span>
-        {i.pct != null && <span className={cn("num ml-1.5 font-semibold", FAROL[i.farol].texto)}>{fmtPctAtingStr(i.pct)}</span>}
+      <BarraAtingimento pct={i.pct} f={i.farol} sentido={i.sentido} />
+      {serie.length > 1 && (
+        <div className="mt-1 h-[52px]" aria-hidden>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={serie} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
+              <Bar dataKey="realizado" fill="hsl(var(--primary))" fillOpacity={0.55} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+              <Line dataKey="orcado" stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" dot={false} strokeWidth={1.2}
+                connectNulls isAnimationActive={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </button>
+  );
+}
+
+/** O resto do consolidado: pequeno, mas ainda do consolidado. */
+function TileConsolidado({ item: i, onAbrir }: { item: ItemPainel; onAbrir: () => void }) {
+  const u = i.ind.unidade;
+  return (
+    <button type="button" onClick={onAbrir}
+      className="rounded-lg border border-border bg-card px-3 py-2 text-left transition hover:border-primary/40">
+      <div className="flex items-center justify-between gap-1.5">
+        <span className="truncate text-[11px] text-muted-foreground">{i.ind.indicador}</span>
+        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", FAROL[i.farol].barra)} title={FAROL[i.farol].rotulo} />
+      </div>
+      <div className="mt-0.5 flex items-center gap-1.5">
+        <span className="num text-[16px] font-semibold">
+          {comValorExato(i.realizado, fmtValorCurtoStr(i.realizado, u), { moeda: u === "BRL", casas: 2 })}
+        </span>
+        <SeloOrigem origem={i.origem} nota={i.nota} />
+      </div>
+      <div className="num text-[10.5px] text-muted-foreground">
+        {(i.orcado ?? 0) > 0 ? <>meta {fmtValorCurtoStr(i.orcado, u)} · <span className={FAROL[i.farol].texto}>{fmtPctAtingStr(i.pct)}</span></> : "sem meta"}
       </div>
     </button>
+  );
+}
+
+/** Um canal numa linha só; a tabela aparece ao abrir. */
+function CanalRecolhivel({ bloco: b, aberto, onAlternar, onAbrir }: {
+  bloco: BlocoCanal; aberto: boolean; onAlternar: () => void; onAbrir: (i: IndicadorOS) => void;
+}) {
+  const ns = b.itens.find((i) => i.ind.north_star && i.realizado != null) ?? b.itens.find((i) => i.ind.north_star);
+  return (
+    <div>
+      <button type="button" onClick={onAlternar} aria-expanded={aberto}
+        className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-muted/40">
+        <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", aberto && "rotate-90")} />
+        <span className="w-36 shrink-0 truncate text-[12.5px] font-medium">{b.canal}</span>
+        <FaroisDoCanal itens={b.itens} />
+        {ns && (
+          <span className="ml-auto flex min-w-0 items-baseline gap-1.5 text-[11.5px] text-muted-foreground">
+            <Star className="h-3 w-3 shrink-0 self-center fill-primary/60 text-primary/60" aria-label="North star" />
+            <span className="truncate">{ns.ind.indicador}</span>
+            <span className="num font-medium text-foreground">{fmtValorCurtoStr(ns.realizado, ns.ind.unidade)}</span>
+            {ns.pct != null && <span className={cn("num", FAROL[ns.farol].texto)}>{fmtPctAtingStr(ns.pct)}</span>}
+          </span>
+        )}
+      </button>
+      {aberto && (
+        <table className="mb-1 w-full text-[12.5px]">
+          <thead>
+            <tr className="text-[10.5px] uppercase tracking-wider text-muted-foreground">
+              <th className="px-4 py-1.5 pl-11 text-left font-medium">Indicador</th>
+              <th className="px-2 py-1.5 text-right font-medium">Realizado</th>
+              <th className="px-2 py-1.5 text-right font-medium">Meta</th>
+              <th className="w-[120px] px-4 py-1.5 text-left font-medium">Atingido</th>
+            </tr>
+          </thead>
+          <tbody>
+            {b.itens.map((i) => <LinhaIndicador key={i.ind.id} item={i} onAbrir={() => onAbrir(i.ind)} />)}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 

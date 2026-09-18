@@ -195,6 +195,53 @@ export function montarPainel(
   return ordem.map((canal) => ({ canal, itens: blocos.get(canal)! }));
 }
 
+/* ------------------------------ consolidado × canais ------------------------------ */
+
+/**
+ * Os números que abrem a tela, por departamento, nesta ordem. O consolidado é o que a
+ * diretoria lê; os canais são detalhamento (pedido do financeiro em 18/09/2026). Nome que
+ * o OS não tiver é ignorado; consolidado fora da lista vai para a faixa secundária.
+ */
+export const DESTAQUE_CONSOLIDADO: Record<string, string[]> = {
+  "Aquisição": ["Novos Clientes Total", "Novo MRR Total", "CAC", "LTV/CAC"],
+  "Operação": ["% Churn Revenue Total", "Receita Churn Total", "% Churn Customer Total", "Upsell Total"],
+};
+
+export type Separacao = {
+  destaques: ItemPainel[];
+  demaisConsolidado: ItemPainel[];
+  canais: BlocoCanal[];
+};
+
+export function separarConsolidado(blocos: BlocoCanal[], departamento: string): Separacao {
+  const consolidado = blocos.find((b) => b.canal === "Consolidado")?.itens ?? [];
+  const lista = DESTAQUE_CONSOLIDADO[departamento] ?? [];
+  const destaques = lista
+    .map((nome) => consolidado.find((i) => i.ind.indicador === nome))
+    .filter((i): i is ItemPainel => !!i);
+  const ids = new Set(destaques.map((i) => i.ind.id));
+  return {
+    destaques,
+    demaisConsolidado: consolidado.filter((i) => !ids.has(i.ind.id)),
+    canais: blocos.filter((b) => b.canal !== "Consolidado"),
+  };
+}
+
+/** Os últimos `n` meses de um indicador até `ate` (inclusive), para o minigráfico. */
+export function serieAte(
+  linhas: LinhaMensalOS[], id: string, ate: string, n = 12,
+): { competencia: string; realizado: number | null; orcado: number | null }[] {
+  return linhas
+    .filter((l) => l.indicator_id === id && l.competencia && l.competencia.slice(0, 10) <= ate.slice(0, 10))
+    .sort((a, b) => a.competencia.localeCompare(b.competencia))
+    .slice(-n)
+    .map((l) => ({
+      competencia: l.competencia.slice(0, 10),
+      realizado: num(l.realizado),
+      orcado: (num(l.orcado) ?? 0) > 0 ? num(l.orcado) : null,
+    }));
+}
+
 /** Contagem de faróis — o resumo do topo ("12 na meta · 5 em atenção · 9 abaixo"). */
 export function resumoFarois(blocos: BlocoCanal[]): Record<Farol, number> {
   const r: Record<Farol, number> = { bom: 0, atencao: 0, ruim: 0, sem_meta: 0, sem_dado: 0, neutro: 0 };

@@ -113,7 +113,7 @@ export const GUIA: readonly Verbete[] = [
     titulo: "Caixa",
     grupo: "Início",
     capacidades: ["tesouraria"],
-    oQueE: "Saldo em banco e movimentação: o que entrou, o que saiu, o fluxo projetado, o capital de giro e o ponto de equilíbrio.",
+    oQueE: "Saldo em banco e movimentação: o que entrou, o que saiu e o fluxo projetado.",
     quemUsa: "Financeiro e diretoria.",
     passos: [
       "Início › Caixa mostra o saldo consolidado. Os extratos linha a linha ficam em Extrato Sicoob e Extrato Asaas (busque por '⌘K extrato').",
@@ -121,8 +121,9 @@ export const GUIA: readonly Verbete[] = [
     ],
     cuidados: [
       "Caixa é saldo e extrato bancário. Fluxo de caixa CONTÁBIL por atividade (operacional, investimento, financiamento) é a DFC, outra tela.",
+      "Ponto de equilíbrio e capital de giro NÃO ficam aqui: moram em Demonstrações › DRE, aba Análises.",
     ],
-    termos: ["saldo", "banco", "conta corrente", "sicoob", "capital de giro", "ponto de equilíbrio", "quanto tem em caixa"],
+    termos: ["saldo", "banco", "conta corrente", "sicoob", "quanto tem em caixa"],
   },
   {
     rota: "/asaas",
@@ -494,12 +495,17 @@ export const GUIA: readonly Verbete[] = [
       "Demonstrações › DRE. Cada coluna é um mês; cada linha, uma rubrica.",
       "Clique numa célula para abrir os lançamentos que a compõem — data, contraparte, valor, categoria e título no Omie.",
       "Para trocar a categoria de um lançamento, o caminho é o ERP primeiro: a correção se faz no Omie e volta na próxima sincronização.",
+      "O ponto de equilíbrio fica na aba Análises da DRE (link direto: /demonstracoes/dre?aba=analises). A conta é custos e despesas fixos ÷ margem de contribuição %, em regime de competência, sobre o último mês travado.",
+      "Para mudar o que conta como fixo, variável ou fora da conta, use o botão 'Classificar custos' no próprio card. A classificação vale para todos os logins.",
+      "Dentro da classificação dá para consultar a IA: 'Revisar tudo' aponta o que ela mudaria, e a caixa de pergunta responde dúvidas sobre uma rubrica. Ela só sugere; cada sugestão tem um botão 'Aplicar' e mostra quanto o equilíbrio mudaria.",
     ],
     cuidados: [
       "Mês travado não é o mesmo que mês fechado. Mês aberto ainda recebe lançamento, e o número é parcial.",
       "O EBITDA Ajustado tem uma linha própria: a máquina garimpa os candidatos a ajuste, mas quem decide o que é ajuste é uma pessoa.",
+      "O ponto de equilíbrio é competência e o capital de giro, ao lado, é caixa: os dois não batem de propósito.",
     ],
-    termos: ["dre", "resultado", "ebitda", "margem", "receita", "despesa", "rubrica", "lançamentos", "abrir a célula", "por que caiu"],
+    termos: ["dre", "resultado", "ebitda", "margem", "receita", "despesa", "rubrica", "lançamentos", "abrir a célula", "por que caiu",
+             "ponto de equilíbrio", "break-even", "margem de contribuição", "custo fixo", "quanto precisa faturar", "capital de giro"],
   },
   {
     rota: "/demonstracoes/dfc",

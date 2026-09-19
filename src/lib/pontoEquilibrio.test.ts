@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   calcular, media, mesReferencia, rubricasOrfas, classificacaoPadrao,
-  rotuloCurto, rotuloLongo, sortKey, colunaDoMes, type Bucket,
+  rotuloCurto, rotuloLongo, sortKey, colunaDoMes, sinaisDasRubricas, type Bucket,
 } from "./pontoEquilibrio";
 
 /* DRE mínima: receita 100k, variável 20k, fixo 40k.
@@ -163,5 +163,49 @@ describe("rótulos de mês", () => {
 
   it("colunaDoMes usa o mês corrente", () => {
     expect(colunaDoMes(new Date(2026, 7, 10))).toBe("Aug-26");
+  });
+});
+
+describe("sinaisDasRubricas", () => {
+  /* Seis meses de receita crescendo; Meios de Pagamento é 3% dela, Equipe
+     Administrativa é parada e Eventos pula sem relação com a venda. */
+  const MESES = ["Jan-26", "Feb-26", "Mar-26", "Apr-26", "May-26", "Jun-26"];
+  const receita = [100, 110, 125, 130, 150, 160].map((x) => x * 1000);
+  const eventos = [0, 9000, 0, 1000, 12000, 500];
+  const linha = (conta: string, f: (i: number) => number) =>
+    ({ Conta: conta, ...Object.fromEntries(MESES.map((m, i) => [m, f(i)])) });
+  const ROWS6 = [
+    linha("Receita de Assinaturas", (i) => receita[i]),
+    linha("Meios de Pagamento", (i) => -receita[i] * 0.03),
+    linha("Equipe Administrativa", () => -40_000),
+    linha("Eventos e Feiras", (i) => -eventos[i]),
+  ];
+  const porNome = (s: ReturnType<typeof sinaisDasRubricas>) => new Map(s.map((x) => [x.rubrica, x]));
+
+  it("classifica o comportamento de cada rubrica contra a receita", () => {
+    const s = porNome(sinaisDasRubricas(ROWS6, MESES, "Jun-26"));
+    const mp = s.get("Meios de Pagamento")!;
+    expect(mp.comportamento).toBe("acompanha");
+    expect(mp.elasticidade).toBeCloseTo(1, 6);
+    expect(mp.pctReceita).toBeCloseTo(3, 6);
+
+    const adm = s.get("Equipe Administrativa")!;
+    expect(adm.comportamento).toBe("estavel");
+    expect(adm.variacao).toBe(0);
+
+    expect(s.get("Eventos e Feiras")!.comportamento).toBe("irregular");
+    expect(s.get("Servidor")!.comportamento).toBe("sem_dado");
+  });
+
+  it("não olha além do mês de referência nem para trás da janela", () => {
+    const s = porNome(sinaisDasRubricas(ROWS6, MESES, "Apr-26", 3));
+    expect(s.get("Meios de Pagamento")!.meses).toBe(3);
+    // 3 meses é pouco para correlação: fica sem sinal, com a média ainda lá
+    expect(s.get("Meios de Pagamento")!.comportamento).toBe("sem_dado");
+    expect(s.get("Meios de Pagamento")!.correlacao).toBeNull();
+  });
+
+  it("mês de referência fora das colunas devolve vazio", () => {
+    expect(sinaisDasRubricas(ROWS6, MESES, "Dec-26")).toEqual([]);
   });
 });

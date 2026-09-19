@@ -64,7 +64,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     // que a pessoa saia de onde está para perguntar.
     { title: "Briefing", url: "/briefing", icon: Sparkles, busca: ["diário", "agenda", "e-mails", "notícias"] },
     { title: "Novidades do Hub", url: "/briefing/novidades", icon: Rocket, busca: ["mudanças", "changelog", "o que mudou", "atualizações", "versão"] },
-    { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE", busca: ["saldo", "banco", "capital de giro", "ponto de equilíbrio"] },
+    { title: "Caixa", url: "/caixa", icon: Landmark, badge: "OMIE", busca: ["saldo", "banco"] },
     { title: "Asaas", url: "/asaas", icon: CreditCard, busca: ["cobranças", "recebimentos", "estornos"] },
     { title: "Assinaturas", url: "/assinaturas", icon: Repeat, busca: ["mrr", "recorrência", "churn", "carteira"] },
     { title: "Metas & Indicadores", url: "/indicadores", icon: Target, badge: "OS",
@@ -113,7 +113,7 @@ export const GRUPOS_FINANCEIRO: NavGrupo[] = [
     { title: "Takeat LTD/LLC", url: "/investimentos", icon: TrendingUp, busca: ["exterior", "financials"] },
   ]},
   { label: "Demonstrações", items: [
-    { title: "DRE", url: "/demonstracoes/dre", icon: FileBarChart, busca: ["resultado", "ebitda", "análises"] },
+    { title: "DRE", url: "/demonstracoes/dre", icon: FileBarChart, busca: ["resultado", "ebitda", "análises", "ponto de equilíbrio", "break-even", "margem de contribuição", "capital de giro"] },
     { title: "DFC", url: "/demonstracoes/dfc", icon: TrendingUp, busca: ["fluxo de caixa", "cashburn", "runway"] },
     // A Revisão do Mês mudou para o grupo "Apresentações" — ela é uma reunião, não
     // um demonstrativo. A rota antiga continua respondendo, redirecionando.

@@ -22,13 +22,14 @@ import { valorExato } from "@/lib/valor";
 import { comValorExato } from "@/components/ValorExato";
 import { fmtBRLShort as fmtBRLShortStr, fmtPct } from "@/pages/dashboard/format";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { SlidersHorizontal, RotateCcw, AlertTriangle, Info } from "lucide-react";
+import { SlidersHorizontal, RotateCcw, AlertTriangle, Info, Sparkles, Loader2, Send, X } from "lucide-react";
 import {
   ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Cell, CartesianGrid,
 } from "recharts";
 import {
   calcular, media, mesReferencia, catalogoCompleto, classificacaoPadrao, rubricasOrfas,
   colunaDoMes, diasDoMes, rotuloCurto, rotuloLongo, sortKey, COL_MES, GRUPO_OUTRAS,
+  sinaisDasRubricas,
   type Bucket, type LinhaDRE, type ResultadoMes,
 } from "@/lib/pontoEquilibrio";
 
@@ -185,7 +186,9 @@ export default function PontoEquilibrio() {
     if (!error) { if (origem !== "banco") setOrigem("banco"); return; }
 
     // Sem tabela (migration pendente) o card continua utilizável, só que local.
-    const next = { ...ajustes, [rubrica]: bucket };
+    // `lerLocal()` entra junto porque "Aplicar todas" chama isto em laço, e o
+    // `ajustes` desta closure não enxerga as rubricas gravadas nas voltas anteriores.
+    const next = { ...ajustes, ...lerLocal(), [rubrica]: bucket };
     localStorage.setItem(CLASSIF_KEY, JSON.stringify(next));
     if (origem !== "local") {
       setOrigem("local");
@@ -377,7 +380,7 @@ export default function PontoEquilibrio() {
 
       <PainelClassificacao
         open={painel} onOpenChange={setPainel}
-        rows={rows} mesRef={mesRef} classificacao={classificacao}
+        rows={rows} colunas={colunas} resultados={resultados} mesRef={mesRef} classificacao={classificacao}
         onReclassificar={reclassificar} onRestaurar={restaurarPadrao}
         ajustesCount={Object.keys(ajustes).length} resultado={ref} anterior={anterior}
         origem={origem}
@@ -424,11 +427,20 @@ function SerieTooltip({ active, payload, label }: any) {
 /* Painel de classificação — o que é variável, o que é fixo e o que fica fora.
    Mostra o valor da rubrica no mês de referência porque mover uma linha sem
    ver quanto ela pesa é decidir no escuro. */
+type SugestaoIA = {
+  rubrica: string; bucket: Bucket; atual: Bucket;
+  motivo: string; confianca: "alta" | "media" | "baixa";
+};
+type TrocaIA = { pergunta: string; resposta: string; sugestoes: SugestaoIA[] };
+
+const ROTULO_CONFIANCA = { alta: "confiança alta", media: "confiança média", baixa: "confiança baixa" } as const;
+
 function PainelClassificacao({
-  open, onOpenChange, rows, mesRef, classificacao, onReclassificar, onRestaurar, ajustesCount, resultado, anterior, origem,
+  open, onOpenChange, rows, colunas, resultados, mesRef, classificacao, onReclassificar, onRestaurar,
+  ajustesCount, resultado, anterior, origem,
 }: {
   open: boolean; onOpenChange: (v: boolean) => void;
-  rows: LinhaDRE[]; mesRef: string;
+  rows: LinhaDRE[]; colunas: string[]; resultados: ResultadoMes[]; mesRef: string;
   classificacao: Record<string, Bucket>;
   onReclassificar: (rubrica: string, b: Bucket) => void;
   onRestaurar: () => void;
@@ -443,14 +455,86 @@ function PainelClassificacao({
     return (rubrica: string) => map.get(rubrica) ?? 0;
   }, [rows, mesRef]);
 
+  /* ----- IA: consulta, nunca aplica sozinha ---------------------------------
+     A conversa mora só no diálogo (fechar e abrir recomeça). O que a IA
+     sugere vira botão "Aplicar"; a gravação é a mesma do clique à mão. */
+  const [pergunta, setPergunta] = useState("");
+  const [conversa, setConversa] = useState<TrocaIA[]>([]);
+  const [pensando, setPensando] = useState(false);
+  const ultima = conversa[conversa.length - 1] ?? null;
+
+  /* Sugestão pendente por rubrica: a mais recente vence, e some quando a
+     classificação já é a sugerida (aplicada à mão ou pelo botão). */
+  const sugestaoDe = useMemo(() => {
+    const m = new Map<string, SugestaoIA>();
+    for (const t of conversa) for (const s of t.sugestoes) m.set(s.rubrica, s);
+    return m;
+  }, [conversa]);
+  const pendentes = useMemo(
+    () => [...sugestaoDe.values()].filter((s) => classificacao[s.rubrica] !== s.bucket),
+    [sugestaoDe, classificacao],
+  );
+  /* O que aconteceria com o equilíbrio se tudo o que está pendente fosse aplicado. */
+  const simulado = useMemo(() => {
+    if (!pendentes.length) return null;
+    const cls = { ...classificacao };
+    for (const s of pendentes) cls[s.rubrica] = s.bucket;
+    return calcular(rows, [mesRef], cls)[0] ?? null;
+  }, [pendentes, classificacao, rows, mesRef]);
+
+  async function consultar(texto: string) {
+    if (pensando) return;
+    setPensando(true);
+    try {
+      const padrao = classificacaoPadrao(rows);
+      const sinais = sinaisDasRubricas(rows, colunas, mesRef);
+      const idx = resultados.findIndex((r) => r.mes === mesRef);
+      const { data, error } = await supabase.functions.invoke("ponto-equilibrio-ia", {
+        body: {
+          mesRef,
+          pergunta: texto || undefined,
+          resultado: {
+            receita: resultado.receita, fixos: resultado.fixos, variaveis: resultado.variaveis,
+            mcPct: resultado.mcPct, pe: resultado.pe,
+          },
+          receitaSerie: resultados.slice(Math.max(0, idx - 11), idx + 1).map((r) => ({ mes: r.mes, receita: r.receita })),
+          rubricas: sinais.map((s) => ({
+            ...s,
+            atual: classificacao[s.rubrica] ?? "fora",
+            padrao: padrao[s.rubrica] ?? "fora",
+            valorRef: valorDe(s.rubrica),
+          })),
+          historico: conversa.map((t) => ({ pergunta: t.pergunta, resposta: t.resposta })),
+        },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      setConversa((c) => [...c, {
+        pergunta: texto || "Revisar a classificação inteira",
+        resposta: String(data?.resposta ?? ""),
+        sugestoes: (data?.sugestoes ?? []) as SugestaoIA[],
+      }]);
+      setPergunta("");
+    } catch (e) {
+      toast.error(`Não consegui consultar a IA: ${(e as Error)?.message ?? e}`);
+    } finally {
+      setPensando(false);
+    }
+  }
+
+  function aplicarTodas() {
+    for (const s of pendentes) onReclassificar(s.rubrica, s.bucket);
+    toast.success(`${pendentes.length} rubrica(s) reclassificada(s) pela sugestão da IA.`);
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
+      <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle className="text-[15px]">Classificação de custos · ponto de equilíbrio</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-secondary/40 px-3 py-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-secondary/40 px-3 py-2">
           <div className="text-[11.5px] text-muted-foreground">
             Valores de <span className="font-semibold text-foreground">{rotuloLongo(mesRef)}</span> ·{" "}
             fixos <span className="num font-semibold text-foreground">{fmtBRLShort(resultado.fixos)}</span> ·{" "}
@@ -466,14 +550,125 @@ function PainelClassificacao({
           </button>
         </div>
 
-        <p className="text-[11.5px] text-muted-foreground">
+        <p className="shrink-0 text-[11.5px] text-muted-foreground">
           <span className="font-medium text-foreground">Variável</span> sobe junto com a venda ·{" "}
           <span className="font-medium text-foreground">Fixo</span> acontece independente do faturamento ·{" "}
           <span className="font-medium text-foreground">Fora</span> não entra na conta.
           Depreciação está como fixo (ponto de equilíbrio contábil); jogue em "Fora" para ler o de caixa.
         </p>
 
-        <div className="-mx-1 max-h-[52vh] overflow-y-auto px-1">
+        {/* Consultar a IA */}
+        <div className="shrink-0 rounded-lg border border-border bg-card p-2.5">
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => { e.preventDefault(); if (pergunta.trim()) consultar(pergunta.trim()); }}
+          >
+            <Sparkles className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <input
+              value={pergunta}
+              onChange={(e) => setPergunta(e.target.value)}
+              disabled={pensando}
+              maxLength={1500}
+              placeholder='Pergunte à IA — ex.: "Servidor deveria ser fixo?"'
+              className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 text-[12px] outline-none placeholder:text-muted-foreground/70 focus:border-primary"
+            />
+            <button
+              type="submit"
+              disabled={pensando || !pergunta.trim()}
+              className="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-2.5 text-[11.5px] font-medium text-primary-foreground transition disabled:opacity-40"
+              title="Perguntar"
+            >
+              <Send className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => consultar("")}
+              disabled={pensando}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-[11.5px] font-medium text-foreground transition hover:bg-secondary disabled:opacity-40"
+              title="A IA olha todas as rubricas, com o comportamento de cada uma contra a receita nos últimos 12 meses, e aponta o que mudaria"
+            >
+              {pensando ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              Revisar tudo
+            </button>
+          </form>
+
+          {pensando && (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Lendo as rubricas e o comportamento de cada uma contra a receita…
+            </p>
+          )}
+
+          {ultima && !pensando && (
+            <div className="mt-2 max-h-[24vh] space-y-2 overflow-y-auto border-t border-border/60 pt-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[10.5px] text-muted-foreground">{ultima.pergunta}</div>
+                  <p className="mt-0.5 whitespace-pre-line text-[12px] leading-relaxed text-foreground">{ultima.resposta}</p>
+                </div>
+                <button
+                  onClick={() => setConversa([])}
+                  className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
+                  title="Limpar a conversa"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              {ultima.sugestoes.length > 0 && (
+                <div className="space-y-1">
+                  {ultima.sugestoes.map((s) => {
+                    const agora = classificacao[s.rubrica] ?? s.atual;
+                    const jaEsta = agora === s.bucket;
+                    return (
+                      <div key={s.rubrica} className="flex items-start gap-2 rounded-md bg-secondary/40 px-2 py-1.5">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12px] text-foreground">
+                            <span className="font-medium">{s.rubrica}</span>{" "}
+                            <span className="text-muted-foreground">
+                              {jaEsta ? `· ${ROTULO_BUCKET[s.bucket]}` : `· ${ROTULO_BUCKET[agora]} → ${ROTULO_BUCKET[s.bucket]}`}
+                            </span>
+                            <span className="ml-1.5 text-[10px] text-muted-foreground/80">{ROTULO_CONFIANCA[s.confianca]}</span>
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">{s.motivo}</div>
+                        </div>
+                        {jaEsta ? (
+                          <span className="shrink-0 pt-0.5 text-[10.5px] text-muted-foreground">
+                            {agora === s.atual ? "mantém" : "aplicada"}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => onReclassificar(s.rubrica, s.bucket)}
+                            className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-foreground transition hover:bg-secondary"
+                          >
+                            Aplicar
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {pendentes.length > 1 && simulado && (
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                  <span>
+                    Aplicando as {pendentes.length} sugestões, o equilíbrio de {rotuloCurto(mesRef)} vai de{" "}
+                    <span className="num font-semibold text-foreground">{resultado.pe === null ? "não existe" : fmtBRLShortStr(resultado.pe)}</span>{" "}
+                    para <span className="num font-semibold text-foreground">{simulado.pe === null ? "não existe" : fmtBRLShortStr(simulado.pe)}</span>.
+                  </span>
+                  <button
+                    onClick={aplicarTodas}
+                    className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground"
+                  >
+                    Aplicar todas ({pendentes.length})
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
           {grupos.map((g) => (
             <div key={g.grupo} className="mb-3">
               <div className="sticky top-0 z-10 bg-background py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
@@ -488,13 +683,24 @@ function PainelClassificacao({
                 {g.rubricas.map((r) => {
                   const v = valorDe(r);
                   const b = classificacao[r] ?? "fora";
+                  const sug = sugestaoDe.get(r);
+                  const sugPendente = sug && sug.bucket !== b ? sug : null;
                   return (
                     <div key={r} className={cn(
                       "flex items-center justify-between gap-3 rounded-md px-2 py-1.5",
                       v > 0 ? "bg-secondary/40" : "bg-secondary/10",
                     )}>
-                      <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
                         <div className={cn("truncate text-[12px]", v > 0 ? "text-foreground" : "text-muted-foreground")} title={r}>{r}</div>
+                        {sugPendente && (
+                          <button
+                            onClick={() => onReclassificar(r, sugPendente.bucket)}
+                            title={`${sugPendente.motivo}\n\nClique para aplicar.`}
+                            className="inline-flex shrink-0 items-center gap-1 rounded border border-primary/40 bg-primary/5 px-1.5 py-px text-[10px] font-medium text-primary transition hover:bg-primary/10"
+                          >
+                            <Sparkles className="h-3 w-3" /> IA: {ROTULO_BUCKET[sugPendente.bucket]}
+                          </button>
+                        )}
                       </div>
                       <div className="num shrink-0 text-[11.5px] text-muted-foreground" title={valorExato(v)}>
                         {v > 0 ? fmtBRLShortStr(v) : "—"}
@@ -525,7 +731,7 @@ function PainelClassificacao({
           ))}
         </div>
 
-        <p className="border-t border-border pt-2 text-[10.5px] text-muted-foreground/80">
+        <p className="shrink-0 border-t border-border pt-2 text-[10.5px] text-muted-foreground/80">
           {origem === "banco" ? (
             <>Vale para todos os logins — cada mudança grava na hora e o card de todo mundo passa a usar esta regra.</>
           ) : (

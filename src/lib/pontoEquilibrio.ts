@@ -283,6 +283,110 @@ export function media(meses: ResultadoMes[], rotulo = "média"): ResultadoMes | 
   return montar(receita, variaveis, fixos, rotulo);
 }
 
+/* ------------------------------ sinal para a IA ------------------------------ */
+
+/* Como cada rubrica se comportou contra a receita — o que a IA recebe como
+   evidência na hora de sugerir fixo/variável. A conta é daqui, e não do modelo,
+   pela mesma regra do resto do Hub: a IA argumenta sobre números que o código
+   calculou, nunca produz os números. */
+
+export type Comportamento = "acompanha" | "estavel" | "irregular" | "sem_dado";
+
+export type SinalRubrica = {
+  rubrica: string;
+  grupo: string;
+  /** meses da janela em que a rubrica teve valor */
+  meses: number;
+  mediaMensal: number;
+  /** soma da rubrica ÷ soma da receita na janela, em % */
+  pctReceita: number | null;
+  /** Pearson entre a rubrica e a receita, mês a mês */
+  correlacao: number | null;
+  /** quanto % a rubrica anda quando a receita anda 1% (inclinação × médias) */
+  elasticidade: number | null;
+  /** desvio ÷ média do valor da rubrica — perto de 0 é valor parado */
+  variacao: number | null;
+  comportamento: Comportamento;
+};
+
+const MIN_MESES_SINAL = 4;
+
+function mediaDe(xs: number[]): number {
+  return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
+}
+
+/** Coeficiente de variação (desvio populacional ÷ média). null se a média é 0. */
+export function coefVariacao(xs: number[]): number | null {
+  const m = mediaDe(xs);
+  if (!xs.length || m === 0) return null;
+  const v = mediaDe(xs.map((x) => (x - m) ** 2));
+  return Math.sqrt(v) / Math.abs(m);
+}
+
+/**
+ * Sinal de comportamento de cada rubrica de custo nos últimos `janela` meses
+ * até `mesRef`, contando só meses com receita (mês sem receita não diz nada
+ * sobre o que anda junto com ela).
+ *
+ * "acompanha": correlação ≥ 0,6 e elasticidade entre 0,5 e 1,6 — anda com a receita.
+ * "estavel":   variação ≤ 15% ou elasticidade perto de zero — não liga para a receita.
+ * "irregular": nenhum dos dois; é aqui que a IA precisa do julgamento de negócio.
+ */
+export function sinaisDasRubricas(
+  rows: LinhaDRE[],
+  colunas: string[],
+  mesRef: string,
+  janela = 12,
+): SinalRubrica[] {
+  const ordenadas = [...colunas].sort((a, b) => sortKey(a) - sortKey(b));
+  const ate = ordenadas.indexOf(mesRef);
+  if (ate < 0) return [];
+
+  const byConta = new Map<string, LinhaDRE>();
+  for (const r of rows ?? []) {
+    const conta = String(r?.["Conta"] ?? "").trim();
+    if (conta && !byConta.has(conta)) byConta.set(conta, r);
+  }
+  const val = (conta: string, col: string) => num(byConta.get(conta)?.[col]);
+  const receitaDe = (col: string) => Math.abs(RUBRICAS_RECEITA.reduce((s, r) => s + val(r, col), 0));
+
+  const cols = ordenadas.slice(Math.max(0, ate - janela + 1), ate + 1).filter((c) => receitaDe(c) > 0);
+  const receita = cols.map(receitaDe);
+  const somaReceita = receita.reduce((s, x) => s + x, 0);
+  const mR = mediaDe(receita);
+
+  return catalogoCompleto(rows).flatMap((g) => g.rubricas.map((rubrica): SinalRubrica => {
+    // Em módulo: o sinal gravado varia por fonte (ver `fatorSinal`), e para
+    // dizer "anda junto" o que importa é o tamanho.
+    const c = cols.map((col) => Math.abs(val(rubrica, col)));
+    const meses = c.filter((x) => x > 0.005).length;
+    const mC = mediaDe(c);
+    const base = { rubrica, grupo: g.grupo, meses, mediaMensal: mC };
+    if (!meses) {
+      return { ...base, pctReceita: null, correlacao: null, elasticidade: null, variacao: null, comportamento: "sem_dado" };
+    }
+    const pctReceita = somaReceita > 0 ? (c.reduce((s, x) => s + x, 0) / somaReceita) * 100 : null;
+    const variacao = coefVariacao(c);
+    if (cols.length < MIN_MESES_SINAL) {
+      return { ...base, pctReceita, correlacao: null, elasticidade: null, variacao, comportamento: "sem_dado" };
+    }
+
+    const cov = mediaDe(c.map((x, i) => (x - mC) * (receita[i] - mR)));
+    const varR = mediaDe(receita.map((x) => (x - mR) ** 2));
+    const varC = mediaDe(c.map((x) => (x - mC) ** 2));
+    const correlacao = varR > 0 && varC > 0 ? cov / Math.sqrt(varR * varC) : null;
+    const elasticidade = varR > 0 && mC > 0 ? (cov / varR) * (mR / mC) : null;
+
+    let comportamento: Comportamento = "irregular";
+    if (correlacao !== null && elasticidade !== null
+      && correlacao >= 0.6 && elasticidade >= 0.5 && elasticidade <= 1.6) comportamento = "acompanha";
+    else if ((variacao !== null && variacao <= 0.15)
+      || (elasticidade !== null && Math.abs(elasticidade) < 0.3)) comportamento = "estavel";
+
+    return { ...base, pctReceita, correlacao, elasticidade, variacao, comportamento };
+  }));
+}
+
 /**
  * Mês de referência = último mês FECHADO (coluna travada na DRE).
  * Sem travas, cai para o último mês com receita que não seja o corrente —

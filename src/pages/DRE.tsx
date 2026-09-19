@@ -720,6 +720,19 @@ export default function DRE() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params, columns, travados]);
 
+  /* `?aba=analises` — é por onde a busca e o Assistente mandam quem procura
+     ponto de equilíbrio ou capital de giro, que moram na aba Análises. */
+  useEffect(() => {
+    const aba = params.get("aba");
+    if (aba !== "valores" && aba !== "mom" && aba !== "pct" && aba !== "analises") return;
+    setView("dre");
+    setTab(aba);
+    const resto = new URLSearchParams(params);
+    resto.delete("aba");
+    setParams(resto, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
+
   /* ============================================================
    *  UI
    * ============================================================ */
